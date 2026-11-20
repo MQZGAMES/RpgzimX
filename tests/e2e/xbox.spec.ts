@@ -97,6 +97,7 @@ test('Xbox cria personagem, navega, anda, interage, seleciona, lança magia e re
   await expect.poll(async () => (await getPlayer()).target).toBe(monster);
   await press(page, 2);
   await expect.poll(() => page.evaluate(() => (window.__RPGZIM__ as DebugGame).castLog().map((entry) => entry.spellId))).toContain('holy_arrow');
+  await page.evaluate(({ x, y }) => (window.__RPGZIM__ as DebugGame).teleport(x, y), start);
 
   await press(page, 9);
   await expect(page.getByRole('dialog', { name: 'Menu (pausado)' })).toBeVisible();
@@ -114,9 +115,9 @@ test('Xbox cria personagem, navega, anda, interage, seleciona, lança magia e re
   await expect(choice).toHaveValue('arrow_rain');
   await expect(settings.getByTestId('xbox-spell2-choice')).toHaveValue('holy_arrow');
   await choice.selectOption('light_heal');
-  const binding = settings.getByLabel('Magia 1', { exact: true });
+  const binding = settings.getByRole('combobox', { name: 'Magia 1', exact: true });
   await binding.selectOption('3');
-  await expect(settings.getByLabel('Magia 3', { exact: true })).toHaveValue('2');
+  await expect(settings.getByRole('combobox', { name: 'Magia 3', exact: true })).toHaveValue('2');
   await expect(choice).toHaveValue('light_heal');
   await press(page, 1);
   await expect(settings).toBeHidden();
