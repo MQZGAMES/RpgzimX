@@ -1,0 +1,435 @@
+// Tipos das definições configuráveis (dados) do jogo: itens, magias, vocações, monstros, NPCs, lojas e balanceamento.
+import type { Element } from '../value-objects/element';
+import type { ItemId, MonsterId, NpcId, ShopId, SpellId, VocationId } from '../value-objects/ids';
+
+// ------------------------------------------------------------------ habilidades
+export const SKILL_IDS = ['sword', 'axe', 'club', 'distance', 'shielding', 'magic'] as const;
+export type SkillId = (typeof SKILL_IDS)[number];
+export type WeaponSkill = 'sword' | 'axe' | 'club' | 'distance';
+
+export const SKILL_LABEL: Record<SkillId, string> = {
+  sword: 'Sword Fighting',
+  axe: 'Axe Fighting',
+  club: 'Club Fighting',
+  distance: 'Distance Fighting',
+  shielding: 'Shielding',
+  magic: 'Magic Level',
+};
+
+// ------------------------------------------------------------------ itens
+export const EQUIP_SLOTS = ['head', 'amulet', 'body', 'mainHand', 'offHand', 'legs', 'ring', 'feet'] as const;
+export type EquipSlot = (typeof EQUIP_SLOTS)[number];
+
+export const SLOT_LABEL: Record<EquipSlot, string> = {
+  head: 'Capacete',
+  amulet: 'Amuleto',
+  body: 'Armadura',
+  mainHand: 'Mão principal',
+  offHand: 'Mão secundária',
+  legs: 'Calças',
+  ring: 'Anel',
+  feet: 'Botas',
+};
+
+export type ItemType =
+  | 'weapon'
+  | 'shield'
+  | 'spellbook'
+  | 'armor'
+  | 'helmet'
+  | 'legs'
+  | 'boots'
+  | 'ring'
+  | 'amulet'
+  | 'potion'
+  | 'food'
+  | 'loot';
+
+export interface WeaponStats {
+  kind: 'melee' | 'distance' | 'wand';
+  /** Skill treinada e usada no cálculo (varinhas/cajados usam o Magic Level). */
+  skill: WeaponSkill | 'magic';
+  attack: number;
+  /** Alcance em tiles (distância de Chebyshev). */
+  range: number;
+  element: Element;
+  /** Tipo de munição exigida no slot de munição. */
+  /** Dano fixo (varinhas e cajados). */
+  damage?: readonly [number, number];
+  /** Mana consumida por disparo (só a Varinha de Treino; as demais varinhas e cajados não gastam mana). */
+  manaCost?: number;
+  /** Projétil visual. */
+  projectile?: string;
+  /** Intervalo de ataque próprio (ms). */
+  attackIntervalMs?: number;
+  /** Arma de treino: dano fixo baixo (`damage`), sem rolagem por skill nem redução por armadura. */
+  training?: boolean;
+}
+
+export interface StatBonuses {
+  maxHealth?: number;
+  maxMana?: number;
+  magicLevel?: number;
+  speed?: number;
+  skills?: Partial<Record<SkillId, number>>;
+}
+
+export interface ItemUse {
+  heal?: number;
+  mana?: number;
+  /** Regeneração ao longo do tempo (comida). */
+  regen?: { health: number; mana: number; durationMs: number };
+  cooldownMs: number;
+}
+
+export interface ItemDef {
+  id: ItemId;
+  name: string;
+  description: string;
+  type: ItemType;
+  /** Quadro no atlas de ícones. */
+  icon: string;
+  /** Valor base em ouro (as lojas aplicam seus próprios preços). */
+  value: number;
+  stackable?: boolean;
+  maxStack?: number;
+  slot?: EquipSlot;
+  twoHanded?: boolean;
+  weapon?: WeaponStats;
+  armor?: number;
+  /** Defesa de escudo (bloqueio). */
+  defense?: number;
+  bonuses?: StatBonuses;
+  vocations?: readonly VocationId[];
+  minLevel?: number;
+  use?: ItemUse;
+  /** Amuleto que protege os itens, o dinheiro e a mochila na morte (e some quando o personagem morre). */
+  protectsOnDeath?: boolean;
+}
+
+// ------------------------------------------------------------------ magias
+export type SpellTargetType = 'target' | 'self' | 'areaSelf' | 'areaTarget';
+export type SpellEffectType = 'damage' | 'heal' | 'buff' | 'conjure';
+export type BuffKind = 'defense' | 'attackSpeed' | 'haste' | 'regen' | 'distanceDamage' | 'manaShield';
+
+export interface SpellFormula {
+  /** Fonte de poder: magia (nível + magic level), corpo a corpo ou distância (nível + skill + arma). */
+  kind: 'magic' | 'melee' | 'distance';
+  levelFactor: number;
+  /** Multiplicador do Magic Level (magia) ou da skill (corpo a corpo/distância). */
+  powerFactor: number;
+  base: number;
+  /** Faixa de variação aplicada ao valor médio. */
+  min: number;
+  max: number;
+}
+
+export interface SpellDef {
+  id: SpellId;
+  name: string;
+  /** Palavras mágicas originais exibidas ao conjurar. */
+  words: string;
+  description: string;
+  icon: string;
+  vocations: readonly VocationId[];
+  minLevel: number;
+  minMagicLevel: number;
+  manaCost: number;
+  /** Mana a mais por nível do personagem (magias de ataque dos magos: o custo acompanha o dano). */
+  manaPerLevel?: number;
+  cooldownMs: number;
+  /** Alcance (tiles) para alvos ou centro de área. */
+  range: number;
+  /** Raio (tiles) para áreas. */
+  radius?: number;
+  target: SpellTargetType;
+  effect: SpellEffectType;
+  element: Element;
+  formula?: SpellFormula;
+  buff?: { kind: BuffKind; value: number; durationMs: number };
+  /** Efeito adicional aplicado aos alvos atingidos. */
+  slow?: { factor: number; durationMs: number };
+  /** Magias de criação: tamanho da poção (1 = pequena … 5 = divina), para ordenar. */
+  tier?: number;
+  /** Magia de criação: coloca este item na mochila. */
+  conjure?: { itemId: string; count: number };
+  /** Cura/bênção também alcança os membros do grupo neste raio (tiles). */
+  partyRadius?: number;
+  /** O golpe em área também vira a atenção dos monstros atingidos para quem conjurou (isca). */
+  attract?: boolean;
+  /** Ao conjurar, remove a lentidão de quem conjurou (Corrida). */
+  cancelSlow?: boolean;
+  /** Munição consumida (flechas). */
+  /** Exige uma categoria de arma empunhada. */
+  requiresWeapon?: 'melee' | 'distance';
+  vfx: { projectile?: string; impact: string; sfx: string; color: string };
+}
+
+// ------------------------------------------------------------------ vocações
+export interface VocationDef {
+  id: VocationId;
+  name: string;
+  title: string;
+  description: string;
+  sprite: string;
+  color: string;
+  base: { health: number; mana: number };
+  perLevel: { health: number; mana: number };
+  /** Regeneração por tick de 2 s (escala levemente com o nível). */
+  regen: { health: number; mana: number };
+  /** Dificuldade de treino por skill: quanto menor, mais rápido evolui. */
+  skillMultipliers: Record<SkillId, number>;
+  /**
+   * Crescimento da mana exigida a cada Magic Level desta vocação (o padrão é o do balanceamento). Magos têm a curva
+   * mais suave (o ML deles fica muito acima), Knight a mais íngreme.
+   */
+  magicGrowth?: number;
+  /** Modificadores de dano/cura por categoria. */
+  damage: { melee: number; distance: number; magic: number; healing: number };
+  /** Redução de dano físico adicional (0..1). */
+  physicalReduction: number;
+  baseSpeed: number;
+  attackIntervalMs: number;
+  spells: readonly SpellId[];
+  startingEquipment: Partial<Record<EquipSlot, { itemId: ItemId; count?: number }>>;
+  startingInventory: readonly { itemId: ItemId; count: number }[];
+  startingGold: number;
+  strengths: readonly string[];
+}
+
+// ------------------------------------------------------------------ monstros
+export interface LootEntry {
+  itemId: ItemId;
+  chance: number;
+  min: number;
+  max: number;
+}
+
+export interface MonsterDef {
+  id: MonsterId;
+  name: string;
+  sprite: string;
+  /** 4 = folha humanoide; 2 = apenas esquerda/direita; 1 = sem direção. */
+  directions: 1 | 2 | 4;
+  health: number;
+  experience: number;
+  speed: number;
+  armor: number;
+  defense: number;
+  attack: {
+    kind: 'melee' | 'ranged';
+    min: number;
+    max: number;
+    range: number;
+    intervalMs: number;
+    element: Element;
+    projectile?: string;
+  };
+  resistances?: Partial<Record<Element, number>>;
+  aggroRadius: number;
+  leashRadius: number;
+  wanderRadius: number;
+  /** "skirmisher" mantém distância e ataca de longe. */
+  behavior: 'melee' | 'skirmisher';
+  loot: readonly LootEntry[];
+  gold: { chance: number; min: number; max: number };
+  respawnMs: number;
+  shadow: 's' | 'm' | 'l';
+  /** Escala visual (chefes maiores). */
+  scale?: number;
+  /** Nível recomendado para caçar a espécie (derivado da faixa de força). */
+  level?: number;
+  /** Chefe/elite (aparece raramente; heróis não o escolhem como caça). */
+  elite?: boolean;
+  description: string;
+}
+
+// ------------------------------------------------------------------ NPCs e lojas
+export type DialogAction = 'close' | 'openShop' | 'openDepot' | 'openMarket' | 'heal' | 'next';
+
+export interface DialogOption {
+  label: string;
+  action: DialogAction;
+  /** Página seguinte (para action "next"). */
+  goto?: string;
+}
+
+export interface DialogPage {
+  id: string;
+  text: string;
+  options: readonly DialogOption[];
+}
+
+export interface NpcDef {
+  id: NpcId;
+  name: string;
+  title: string;
+  sprite: string;
+  shopId?: ShopId;
+  dialog: readonly DialogPage[];
+  wanderRadius: number;
+  /** Fala curta exibida ao se aproximar. */
+  greeting: string;
+  /** Guarda da cidade: abate as criaturas que entram nas ruas da vila. */
+  guard?: boolean;
+}
+
+export interface ShopOffer {
+  itemId: ItemId;
+  price: number;
+}
+
+export interface ShopDef {
+  id: ShopId;
+  name: string;
+  /** Itens que o jogador pode comprar. */
+  sells: readonly ShopOffer[];
+  /** Itens que a loja compra do jogador. */
+  buys: readonly ShopOffer[];
+}
+
+// ------------------------------------------------------------------ balanceamento
+export interface BalanceConfig {
+  experience: { base: number; exponent: number };
+  skills: { startLevel: number; baseTries: number; growth: number };
+  magic: { baseMana: number; growth: number };
+  combat: {
+    globalSpellCooldownMs: number;
+    attackExhaustMs: number;
+    healExhaustMs: number;
+    potionCooldownMs: number;
+    unarmedAttack: number;
+    blockChanceBase: number;
+    blockChancePerSkill: number;
+    maxBlockChance: number;
+    /** Fração do dano que um personagem causa em outro (jogador ou NPC humano); em criaturas o dano é cheio. */
+    pvpDamageMultiplier: number;
+    shieldingTriesPerHit: number;
+    /** Arma de distância com o alvo colado (1 tile): multiplicadores de acerto e de dano. */
+    pointBlankHitMultiplier: number;
+    pointBlankDamageMultiplier: number;
+    /** Janela (ms) em que cada atacante conta uma vez para o Shielding. */
+    shieldingWindowMs: number;
+    /** Máximo de atacantes que treinam Shielding por janela (Tibia: 2). */
+    shieldingMaxAttackers: number;
+    /** O personagem precisa ter atacado neste intervalo (ms) para o Shielding treinar. */
+    shieldingAttackWindowMs: number;
+  };
+  player: {
+    inventorySlots: number;
+    depotSlots: number;
+    regenTickMs: number;
+    deathXpPenalty: number;
+    deathSkillPenalty: number;
+    respawnInvulnerableMs: number;
+  };
+  world: { lootDecayMs: number; corpseDecayMs: number; aiSleepDistance: number };
+  /** Escada de força das criaturas (ver data/monsters.ts). */
+  creatures: {
+    baseHealth: number;
+    baseAttack: number;
+    baseExperience: number;
+    baseGold: number;
+    /** Multiplicador de vida e ataque de uma faixa para a seguinte (2 = dobro). */
+    tierRatio: number;
+    xpRatio: number;
+    goldRatio: number;
+    /** Distância de perseguição = base da espécie × este valor. */
+    leashMultiplier: number;
+    /** Escala da velocidade de todas as criaturas (ritmo do jogo no celular). */
+    speedScale: number;
+    /** Escala da experiência que todas as criaturas dão (0,5 = metade). */
+    xpRate?: number;
+  };
+}
+
+// ------------------------------------------------------------------ heróis (personagens-jogadores com vida própria)
+/** Traços de 0 a 1 que guiam as decisões do herói quando ninguém o controla. */
+export interface Temperament {
+  /** Coragem: caça monstros mais fortes e recua mais tarde. */
+  bravery: number;
+  /** Ganância: enche mais a mochila antes de voltar e guarda mais ouro. */
+  greed: number;
+  /** Disciplina: treina skills com armas de treino com mais frequência. */
+  discipline: number;
+  /** Sociabilidade: conversa e passeia pela praça. */
+  sociability: number;
+  /** Prudência: usa poções mais cedo e compra mais poções. */
+  caution: number;
+}
+
+export type HeroLineKey =
+  | 'hunt'
+  | 'town'
+  | 'sell'
+  | 'buy'
+  | 'upgrade'
+  | 'bank'
+  | 'train'
+  | 'trainDone'
+  | 'retreat'
+  | 'death'
+  | 'levelUp'
+  | 'skillUp'
+  | 'kill'
+  | 'rareLoot'
+  | 'idle'
+  | 'greetPlayer'
+  | 'help'
+  | 'status'
+  | 'explore'
+  | 'comment'
+  | 'invite'
+  | 'inviteAccept'
+  | 'inviteDecline'
+  | 'partyLeave'
+  | 'followLeader'
+  | 'gift'
+  | 'pkThreat'
+  | 'pkWin'
+  | 'pkLose'
+  | 'pkSpare'
+  | 'pkEscaped'
+  | 'revenge'
+  | 'flee'
+  | 'pkWish'
+  | 'lowPotions'
+  | 'lure'
+  | 'recover'
+  | 'helpCall'
+  | 'dangerSeen'
+  | 'revengeLater'
+  | 'goal'
+  | 'supplyRun'
+  | 'healAlly'
+  | 'holdPos'
+  | 'orderAttack'
+  | 'marketBuy'
+  | 'bye'
+  | 'back'
+  | 'afk'
+  | 'greetHero'
+  | 'replyHero'
+  | 'tradeSell'
+  | 'tradeBuy'
+  | 'lfg'
+  | 'tired'
+  | 'congrats'
+  | 'rip'
+  | 'warAttack'
+  | 'warRaid'
+  | 'warWin'
+  | 'warBetray'
+  | 'warHelp';
+
+export interface HeroDef {
+  id: string;
+  /** Slot do save (também usado como id do personagem). */
+  slotId: string;
+  name: string;
+  title: string;
+  vocation: VocationId;
+  temperament: Temperament;
+  /** Falas por situação; {player}, {monster}, {level}, {skill}, {area}, {item}, {gold} são substituídos. */
+  lines: Readonly<Record<HeroLineKey, readonly string[]>>;
+}

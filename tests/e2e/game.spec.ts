@@ -1,0 +1,826 @@
+// Fluxos críticos no navegador: criar personagem, entrar no mundo, mover, lutar, usar magia, coletar loot,
+// equipar, negociar, entrar numa casa, salvar e recarregar. A API ?debug é usada apenas para inspecionar o
+// estado e posicionar o personagem perto de alvos (encurta o teste); as ações usam a interface real.
+import { expect, test, type Page } from '@playwright/test';
+// (as posições de teletransporte são as da vila somadas ao deslocamento dela no mundo: +136, +136 — ver
+// src/data/maps/layout.ts; a função roda dentro da página e não enxerga constantes daqui)
+
+type Api = {
+  ready(): boolean;
+  player(): {
+    x: number;
+    y: number;
+    hp: number;
+    mana: number;
+    level: number;
+    xp: number;
+    gold: number;
+    target: string | null;
+    dead: boolean;
+    inventory: { itemId: string; count: number }[];
+    equipment: Record<string, { itemId: string; count: number } | undefined>;
+  };
+  monsters(): { id: string; type: string; x: number; y: number; hp: number; alive: boolean }[];
+  npcs(): { id: string; x: number; y: number }[];
+  teleport(x: number, y: number): void;
+  teleportNear(type: string, dist?: number): string | null;
+  loot(): { id: string; x: number; y: number }[];
+  ui(): { buildingId: string | null; shop: unknown; dialog: unknown; lootId: string | null };
+  walkTo(x: number, y: number): boolean;
+  idle(): boolean;
+  buildings(): { id: string; x: number; y: number; w: number; h: number; doorX: number }[];
+  heroes(): { id: string; x: number; y: number }[];
+  screenOf(id: string): { x: number; y: number } | null;
+  walkGoal(): { x: number; y: number } | null;
+  actorMenu(): string | null;
+  stop(): void;
+};
+
+const api = <T>(page: Page, fn: (a: Api) => T): Promise<T> =>
+  page.evaluate(
+    (src) => new Function('a', `return (${src})(a)`)(window.__RPGZIM__),
+    fn.toString(),
+  ) as Promise<T>;
+
+async function createCharacter(page: Page, vocation: string, name: string) {
+  await page.goto('/?debug');
+  await page.getByRole('button', { name: 'Novo personagem' }).click();
+  await page.getByTestId(`voc-${vocation}`).click();
+  await page.getByTestId('name-input').fill(name);
+  await page.getByRole('button', { name: 'Começar aventura' }).click();
+  await page.waitForFunction(
+    () => (window.__RPGZIM__ as { ready?: () => boolean } | undefined)?.ready?.() === true,
+    null,
+    { timeout: 30_000 },
+  );
+  await expect(page.getByTestId('status-panel')).toBeVisible();
+}
+
+test.beforeEach(async ({ page }) => {
+  // cada teste começa sem saves. A limpeza roda numa página do mesmo site que NÃO carrega o jogo: abrindo '/', o jogo
+  // começava a criar os heróis, a exclusão do banco ficava pendente (conexão aberta) e só acontecia na navegação
+  // seguinte — apagava os heróis recém-criados e deixava a marca "heróis criados" no localStorage (o jogo abria sem
+  // nenhum herói, de vez em quando, na suíte completa)
+  await page.goto('/favicon.png');
+  await page.evaluate(async () => {
+    localStorage.clear();
+    await new Promise<void>((res) => {
+      const r = indexedDB.deleteDatabase('rpgzim');
+      r.onsuccess = r.onerror = r.onblocked = () => res();
+    });
+  });
+});
+
+test('fluxo principal: mover, lutar, magia, loot, equipar, salvar e recarregar', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'teclado e mouse no desktop');
+  await createCharacter(page, 'knight', 'Teste');
+  // movimento pelo teclado (8 direções)
+  const start = await api(page, (a) => a.player());
+  await page.keyboard.down('KeyS');
+  await page.waitForTimeout(700);
+  await page.keyboard.up('KeyS');
+  await page.waitForTimeout(400);
+  const moved = await api(page, (a) => a.player());
+  expect(moved.y).toBeGreaterThan(start.y);
+  // combate: perto de um slime, seleciona o alvo com Tab e espera o ataque automático vencer
+  await api(page, (a) => a.teleport(216, 158));
+  const slime = await api(page, (a) => a.teleportNear('slime', 1));
+  expect(slime).not.toBeNull();
+  await page.keyboard.press('Tab');
+  await expect
+    .poll(async () => (await api(page, (a) => a.player())).target, { timeout: 5000 })
+    .not.toBeNull();
+  // o alvo aparece só no mapa (anel + barra vermelha): sem caixa extra cobrindo a tela
+  await expect(page.getByTestId('target-frame')).toHaveCount(0);
+  // magia pela barra de atalhos (tecla 1 = Golpe Brutal)
+  const manaBefore = (await api(page, (a) => a.player())).mana;
+  await page.keyboard.press('Digit1');
+  await expect
+    .poll(async () => (await api(page, (a) => a.player())).mana, { timeout: 3000 })
+    .toBeLessThan(manaBefore);
+  await expect
+    .poll(async () => (await api(page, (a) => a.player())).xp, { timeout: 40_000 })
+    .toBeGreaterThan(0);
+  // loot: abre pelo botão de ação e coleta tudo
+  const bags = await api(page, (a) => a.loot());
+  if (bags.length) {
+    const gold = (await api(page, (a) => a.player())).gold;
+    await page.keyboard.press('KeyE');
+    await expect(page.getByTestId('loot-window')).toBeVisible();
+    await page.getByRole('button', { name: 'Pegar tudo' }).click();
+    await expect.poll(async () => (await api(page, (a) => a.loot())).length).toBe(0);
+    const after = await api(page, (a) => a.player());
+    expect(after.gold + after.inventory.length).toBeGreaterThan(gold);
+  }
+  // equipar pela interface: machadinha da mochila
+  await page.getByTestId('btn-inventory').click();
+  const axeIndex = (await api(page, (a) => a.player())).inventory.findIndex((s) => s.itemId === 'axe_hand');
+  await page.getByTestId(`bag-${axeIndex}`).click();
+  await expect(page.getByTestId('item-details')).toContainText('Machadinha');
+  await page.getByRole('button', { name: 'Equipar' }).click();
+  await expect
+    .poll(async () => (await api(page, (a) => a.player())).equipment.mainHand?.itemId)
+    .toBe('axe_hand');
+  await page.keyboard.press('Escape');
+  // salvar pelo menu e recarregar
+  await page.getByTestId('btn-settings').click();
+  await page.getByRole('button', { name: 'Salvar agora' }).click();
+  await page.waitForTimeout(500);
+  const saved = await api(page, (a) => a.player());
+  await page.reload();
+  await page.getByText('Teste').first().click();
+  await page.waitForFunction(
+    () => (window.__RPGZIM__ as { ready?: () => boolean } | undefined)?.ready?.() === true,
+  );
+  const restored = await api(page, (a) => a.player());
+  expect(restored.xp).toBe(saved.xp);
+  expect(restored.equipment.mainHand?.itemId).toBe('axe_hand');
+  expect(Math.abs(restored.x - saved.x) + Math.abs(restored.y - saved.y)).toBeLessThanOrEqual(2);
+});
+
+test('loja: conversar com o ferreiro, comprar e vender', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'fluxo de loja validado no desktop');
+  await createCharacter(page, 'paladin', 'Lojista');
+  const smith = (await api(page, (a) => a.npcs())).find((n) => n.id === 'npc:smith')!;
+  await api(page, (a) => a.teleport(165, 152));
+  void smith;
+  await page.keyboard.press('KeyE');
+  await expect(page.getByTestId('npc-dialog')).toBeVisible();
+  await page.getByRole('button', { name: 'Ver mercadorias' }).click();
+  const gold = (await api(page, (a) => a.player())).gold;
+  await page.getByTestId('shop-item-club_wood').click();
+  await page.getByRole('button', { name: /Comprar por/ }).click();
+  await expect.poll(async () => (await api(page, (a) => a.player())).gold).toBe(gold - 25);
+  // ouro insuficiente: item caro mostra feedback e não altera o estado
+  await page.getByTestId('shop-item-boots_swift').click();
+  await page.getByRole('button', { name: /Comprar por/ }).click();
+  await expect(page.getByTestId('message-log')).toContainText('Ouro insuficiente');
+  await page.getByRole('button', { name: 'Vender' }).click();
+  await page.getByTestId('shop-item-club_wood').click();
+  await page.getByRole('button', { name: /Vender por/ }).click();
+  await expect.poll(async () => (await api(page, (a) => a.player())).gold).toBe(gold - 25 + 9);
+});
+
+test('casa explorável no mesmo mapa', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'um projeto basta');
+  await createCharacter(page, 'druid', 'Visita');
+  const house = (await api(page, (a) => a.buildings())).find((b) => b.id === 'house_rosa')!;
+  const doorY = house.y + house.h - 1;
+  await api(page, (a) => a.teleport(165, 182));
+  await page.evaluate(([x, y]) => (window.__RPGZIM__ as Api).walkTo(x!, y!), [house.doorX, doorY - 2]);
+  await expect
+    .poll(async () => (await api(page, (a) => a.ui())).buildingId, { timeout: 15_000 })
+    .toBe('house_rosa');
+  // continua no mesmo canvas/cena: nenhum carregamento de outra tela
+  await expect(page.getByTestId('hud')).toBeVisible();
+});
+
+test('mobile: joystick move o personagem e o HUD cabe na tela', async ({ page }, info) => {
+  test.skip(info.project.name !== 'mobile', 'somente emulação mobile');
+  await createCharacter(page, 'sorcerer', 'Toque');
+  const vp = page.viewportSize()!;
+  // nenhum elemento essencial do HUD fora da tela
+  for (const id of [
+    'status-panel',
+    'select-actor-button',
+    'joystick-zone',
+    'btn-inventory',
+    'btn-settings',
+    'potion-health',
+  ]) {
+    const box = await page.getByTestId(id).boundingBox();
+    expect(box, id).not.toBeNull();
+    expect(box!.x).toBeGreaterThanOrEqual(-1);
+    expect(box!.y).toBeGreaterThanOrEqual(-1);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(vp.width + 1);
+    expect(box!.y + box!.height).toBeLessThanOrEqual(vp.height + 1);
+  }
+  const noOverflow = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1);
+  expect(noOverflow).toBe(true);
+  // arrasta o joystick para a direita (toque)
+  await api(page, (a) => a.teleport(166, 159));
+  const before = await api(page, (a) => a.player());
+  const zone = (await page.getByTestId('joystick-zone').boundingBox())!;
+  const ox = zone.x + zone.width * 0.4;
+  const oy = zone.y + zone.height * 0.6;
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: ox, y: oy }] });
+  for (let i = 1; i <= 6; i++)
+    await cdp.send('Input.dispatchTouchEvent', {
+      type: 'touchMove',
+      touchPoints: [{ x: ox + i * 10, y: oy }],
+    });
+  await page.waitForTimeout(900);
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  const after = await api(page, (a) => a.player());
+  expect(after.x).toBeGreaterThan(before.x);
+  // sem botão de ataque: a magia de ataque mira o mais próximo, lança e começa o ataque básico
+  await api(page, (a) => a.teleport(216, 158));
+  await api(page, (a) => a.teleportNear('slime', 2));
+  const mana = (await api(page, (a) => a.player())).mana;
+  await page.getByTestId('spell-arcane_bolt').tap();
+  await expect.poll(async () => (await api(page, (a) => a.player())).target).not.toBeNull();
+  await expect.poll(async () => (await api(page, (a) => a.player())).mana).toBeLessThan(mana);
+});
+
+test('banco: guardar item e ouro; botão de loot clicável no desktop', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'um projeto basta');
+  await createCharacter(page, 'knight', 'Cofre');
+  const banker = (await api(page, (a) => a.npcs())).find((n) => n.id === 'npc:banker')!;
+  await page.evaluate(([x, y]) => (window.__RPGZIM__ as Api).teleport(x!, y!), [banker.x, banker.y + 2]);
+  await page.getByTestId('interact-button').click();
+  await page.getByRole('button', { name: 'Abrir depósito' }).click();
+  await expect(page.getByTestId('depot-panel')).toBeVisible();
+  await page.getByTestId('depot-amount').fill('25');
+  await page.getByRole('button', { name: 'Depositar', exact: true }).click();
+  await expect(page.getByTestId('depot-bank-gold')).toContainText('25');
+  const axe = (await api(page, (a) => a.player())).inventory.findIndex((s) => s.itemId === 'axe_hand');
+  // um toque mostra os atributos com o botão de guardar; o toque duplo retira direto
+  await page.getByTestId(`depot-bag-${axe}`).click();
+  await expect(page.getByTestId('item-details').getByTestId('item-stats')).toBeVisible();
+  await expect(page.getByTestId('item-details')).toContainText('Ataque');
+  await expect(page.getByTestId('item-details')).toContainText('Machadinha');
+  await page.getByTestId('depot-item-action').click();
+  await expect(page.getByTestId('depot-slot-0')).toHaveAttribute('aria-label', /Machadinha/);
+  await page.getByTestId('depot-slot-0').dblclick();
+  await expect(page.getByTestId('depot-slot-0')).toHaveAttribute('aria-label', 'Espaço vazio no depósito');
+  await page.locator('[role=dialog] button[aria-label=Fechar]').first().click();
+  // loot no chão: o botão contextual abre a janela
+  await api(page, (a) => a.teleport(216, 158));
+  const id = await api(page, (a) => a.teleportNear('slime', 1));
+  await page.evaluate((m) => (window.__RPGZIM__ as Api & { target(id: string): void }).target(m!), id);
+  await expect
+    .poll(async () => (await api(page, (a) => a.loot())).length, { timeout: 30_000 })
+    .toBeGreaterThan(0);
+  await api(page, (a) => a.ui()).then(
+    async (ui) => ui.lootId === null && (await page.getByTestId('interact-button').click()),
+  );
+  await expect(page.getByTestId('loot-window')).toBeVisible();
+});
+
+test('mercado: corretor ao lado da banqueira, vender (categoria → item → anunciar), minhas ofertas e cancelar; online: deslogar e logar', async ({
+  page,
+}, info) => {
+  test.skip(info.project.name !== 'desktop', 'um projeto basta');
+  await createCharacter(page, 'knight', 'Feira');
+  const broker = (await api(page, (a) => a.npcs())).find((n) => n.id === 'npc:broker')!;
+  await page.evaluate(([x, y]) => (window.__RPGZIM__ as Api).teleport(x!, y!), [broker.x, broker.y + 2]);
+  await page.getByTestId('interact-button').click();
+  await page.getByRole('button', { name: 'Abrir mercado' }).click();
+  await expect(page.getByTestId('market-panel')).toBeVisible();
+  // Vender + "Somente disponível": só as categorias do que ele tem (a Machadinha, sim; varinha, não)
+  await page.getByTestId('market-mode-sell').click();
+  await page.getByTestId('market-only-available').click();
+  await expect(page.getByTestId('market-cat-axe')).toBeVisible();
+  await expect(page.getByTestId('market-cat-wand')).toHaveCount(0);
+  await page.getByTestId('market-only-available').click();
+  await expect(page.getByTestId('market-cat-wand')).toBeVisible();
+  // Vender → Machados → Machadinha: o preço já vem sugerido; anuncia com um toque
+  await page.getByTestId('market-cat-axe').click();
+  await page.getByTestId('market-item-axe_hand').click();
+  await expect(page.getByTestId('market-guide')).toBeVisible();
+  await page.getByTestId('market-place-ask').click();
+  // minhas ofertas: a venda aparece, com Cancelar
+  await page.getByTestId('market-mode-mine').click();
+  await expect(page.locator('[data-testid^=market-mine-]')).toHaveCount(1);
+  await page.locator('[data-testid^=market-cancel-]').first().click();
+  await expect(page.locator('[data-testid^=market-mine-]')).toHaveCount(0);
+  // Vender tudo rápido: pede confirmação e anuncia tudo pelo preço sugerido
+  await page.getByTestId('market-mode-sell').click();
+  await page.getByTestId('market-sell-all').click();
+  await page.getByTestId('market-sell-all-yes').click();
+  await expect(page.getByTestId('market-sell-all-confirm')).toHaveCount(0);
+  await page.getByTestId('market-mode-mine').click();
+  await expect(page.locator('[data-testid^=market-mine-]').first()).toBeVisible();
+  // poções (travadas) ficaram de fora: nenhuma foi anunciada
+  expect((await api(page, (a) => a.player())).inventory.some((s) => s.itemId.startsWith('potion_'))).toBe(
+    true,
+  );
+  // Comprar + "Somente disponível": só categorias com anúncio de venda de outra pessoa (o número no canto); o que só a
+  // loja vende não conta. Sem nenhum anúncio, aparece o aviso
+  await page.getByTestId('market-mode-buy').click();
+  await page.getByTestId('market-only-available').click();
+  const cats = page.locator('[data-testid^=market-cat-]');
+  const shown = await cats.count();
+  if (!shown) await expect(page.getByTestId('market-nothing-available')).toBeVisible();
+  for (let i = 0; i < shown; i++) await expect(cats.nth(i)).toContainText(/\d/);
+  await page.getByTestId('market-only-available').click();
+  await expect(page.getByTestId('market-cat-sword')).toBeVisible();
+  // Comprar → filtros da lista (vocação e ordenação)
+  await page.getByTestId('market-cat-sword').click();
+  await page.getByTestId('market-voc-all').click();
+  await page.getByTestId('market-sort-level-desc').click();
+  await expect(page.locator('[data-testid^=market-item-]').first()).toBeVisible();
+  await page.locator('[role=dialog] button[aria-label=Fechar]').first().click();
+  // lista de online: o Boladex sai do jogo e volta
+  await page.getByTestId('btn-players').click();
+  await expect(page.getByTestId('players-panel')).toContainText('Boladex');
+  await page.getByTestId('player-logout-hero:boladex').click();
+  await expect(page.getByTestId('player-login-boladex')).toBeVisible();
+  await page.getByTestId('player-login-boladex').click();
+  await expect(page.getByTestId('player-logout-hero:boladex')).toBeVisible();
+});
+
+test('mobile: toque duplo equipa; toque curto na área do joystick anda até o ponto', async ({
+  page,
+}, info) => {
+  test.skip(info.project.name !== 'mobile', 'somente emulação mobile');
+  await createCharacter(page, 'knight', 'Dedos');
+  await expect(page.getByTestId('joystick')).toHaveCount(0);
+  await api(page, (a) => a.teleport(183, 160));
+  const before = await api(page, (a) => a.player());
+  const zone = (await page.getByTestId('joystick-zone').boundingBox())!;
+  await page.touchscreen.tap(zone.x + zone.width * 0.3, zone.y + zone.height * 0.5);
+  await expect
+    .poll(async () => {
+      const p = await api(page, (a) => a.player());
+      return p.x !== before.x || p.y !== before.y;
+    })
+    .toBe(true);
+  await expect(page.getByTestId('joystick')).toHaveCount(0);
+  // mochila: machadinha marcada como melhor e equipada com toque duplo
+  await page.getByTestId('btn-inventory').tap();
+  const axe = (await api(page, (a) => a.player())).inventory.findIndex((s) => s.itemId === 'axe_hand');
+  const cell = page.getByTestId(`bag-${axe}`);
+  await expect(cell).toHaveAttribute('data-better', 'true');
+  // toque duplo: dois "pointerup" de toque em sequência rápida (sem depender da velocidade de renderização da máquina de teste)
+  await cell.evaluate((el) => {
+    for (let i = 0; i < 2; i++)
+      el.dispatchEvent(
+        new PointerEvent('pointerup', { bubbles: true, pointerType: 'touch', button: 0, isPrimary: true }),
+      );
+  });
+  await expect(page.getByTestId('equip-notice')).toContainText('Machadinha');
+  expect((await api(page, (a) => a.player())).equipment.mainHand?.itemId).toBe('axe_hand');
+});
+
+test('Boladex: aparece na tela inicial, vive sozinho no mundo e pode ser jogado', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'um projeto basta');
+  await page.goto('/?debug');
+  // (o mundo leva alguns segundos para montar com a máquina ocupada)
+  await expect(page.getByTestId('slot-boladex')).toContainText('Nv', { timeout: 15000 });
+  await expect(page.getByRole('button', { name: 'Apagar Boladex' })).toBeVisible();
+  await createCharacter(page, 'paladin', 'Parceiro');
+  type HeroInfo = { id: string; level: number; mode: string; x: number; y: number };
+  const heroes = () => page.evaluate(() => (window.__RPGZIM__ as { heroes(): HeroInfo[] }).heroes());
+  expect((await heroes()).map((h) => h.id).sort()).toEqual([
+    'hero:boladex',
+    'hero:distanciado',
+    'hero:maguim',
+    'hero:mano_cura',
+  ]);
+  const start = (await heroes()).find((h) => h.id === 'hero:boladex')!;
+  // ele sai andando sozinho (decide caçar/passear sem comando do jogador)
+  await expect
+    .poll(
+      async () => {
+        const h = (await heroes()).find((x) => x.id === 'hero:boladex')!;
+        return h.x !== start.x || h.y !== start.y;
+      },
+      { timeout: 20_000 },
+    )
+    .toBe(true);
+  // jogar como o Boladex: volta ao menu e escolhe o slot dele (sem herói duplicado no mundo)
+  await page.goto('/?debug');
+  await page.getByTestId('slot-boladex').click();
+  await page.waitForFunction(
+    () => (window.__RPGZIM__ as { ready?: () => boolean } | undefined)?.ready?.() === true,
+    null,
+    { timeout: 30_000 },
+  );
+  // sem herói duplicado; o personagem criado antes (Parceiro) agora entra logado, jogando com a IA
+  const ids = (await heroes()).map((h) => h.id);
+  expect(ids.filter((id) => id === 'hero:boladex')).toHaveLength(0);
+  expect(ids.filter((id) => ['hero:distanciado', 'hero:maguim', 'hero:mano_cura'].includes(id))).toHaveLength(
+    3,
+  );
+  expect(ids).toHaveLength(4);
+  expect((await api(page, (a) => a.player())).inventory.length).toBeGreaterThan(0);
+});
+
+test('HUD social: modo de ataque, PK e menu do Boladex com convite para grupo', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'um projeto basta');
+  await createCharacter(page, 'knight', 'Social');
+  await page.getByTestId('toggle-stand').click();
+  await expect(page.getByTestId('toggle-stand')).toHaveAttribute('aria-pressed', 'true');
+  await page.getByTestId('toggle-pvp').click();
+  await expect(page.getByTestId('toggle-pvp')).toHaveAttribute('aria-pressed', 'true');
+  // abre o menu do herói pela simulação do toque (a posição na tela varia com o zoom)
+  type HeroInfo = { id: string };
+  const id = (await page.evaluate(() => (window.__RPGZIM__ as { heroes(): HeroInfo[] }).heroes()))[0]!.id;
+  await page.evaluate(
+    (hid) => (window.__RPGZIM__ as { openActorMenu(id: string): void }).openActorMenu(hid),
+    id,
+  );
+  await expect(page.getByTestId('actor-menu')).toContainText('Boladex');
+  // menu discreto: sem "Conversar"; atacar só aparece onde é permitido (no templo, área protegida, não)
+  await expect(page.getByTestId('actor-menu')).not.toContainText('Conversar');
+  await expect(page.getByTestId('actor-attack')).toHaveCount(0);
+  // convidar: quando ele aceita, o painel do grupo abre com os controles
+  await page.evaluate(() => (window.__RPGZIM__ as { befriendHeroes(): void }).befriendHeroes());
+  await page.getByTestId('actor-invite').click();
+  await expect(page.getByTestId('party-panel')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('party-formation-line').click();
+  await page.getByTestId('party-ff-training').click();
+  await page.getByRole('button', { name: 'Fechar' }).first().click();
+  await expect(page.getByTestId('party-panel')).toHaveCount(0);
+  // o resumo do grupo fica no botão "grupo" do HUD (sem quadro ocupando a tela)
+  await page.getByTestId('btn-party').click();
+  await expect(page.getByTestId('party-formation-line')).toHaveClass(/btn-gold/);
+  // cada membro: chamar ou ir até ele (o painel fecha e você vai andando)
+  await expect(page.getByTestId(`party-call-${id}`)).toBeVisible();
+  await api(page, (a) => a.teleport(183, 166));
+  await page.getByTestId(`party-goto-${id}`).click();
+  await expect(page.getByTestId('party-panel')).toHaveCount(0);
+  await expect(page.getByText(/Indo até/).first()).toBeVisible();
+});
+
+test('mobile: toque no mapa em cima e embaixo, no Boladex (posição real na tela), mini mapa e lista de online', async ({
+  page,
+}, info) => {
+  test.skip(info.project.name !== 'mobile', 'somente emulação mobile');
+  await createCharacter(page, 'knight', 'Mapa');
+  await api(page, (a) => a.teleport(166, 159));
+  await page.waitForTimeout(500);
+  const vp = page.viewportSize()!;
+  // toque na parte de cima e na de baixo do mapa (longe dos botões): o personagem sai andando
+  for (const [x, y] of [
+    [vp.width * 0.4, vp.height * 0.24],
+    [vp.width * 0.3, vp.height * 0.62],
+  ] as const) {
+    await api(page, (a) => a.stop());
+    await page.touchscreen.tap(x, y);
+    await expect
+      .poll(
+        async () => (await api(page, (a) => a.walkGoal())) !== null || !(await api(page, (a) => a.idle())),
+      )
+      .toBe(true);
+    await api(page, (a) => {
+      a.stop();
+      a.teleport(166, 159);
+    });
+  }
+  // toque no Boladex onde ele aparece na tela: abre o menu dele (espera os heróis entrarem: o mundo leva um tempo para
+  // montar quando a máquina está ocupada)
+  await expect.poll(async () => (await api(page, (a) => a.heroes())).length, { timeout: 15000 }).toBeGreaterThan(0);
+  const hero = (await api(page, (a) => a.heroes()))[0]!;
+  await page.evaluate(
+    (p) => (window.__RPGZIM__ as { teleport(x: number, y: number): void }).teleport(p.x, p.y),
+    { x: hero.x, y: hero.y + 3 },
+  );
+  await page.waitForTimeout(400);
+  // ele anda sozinho: lê a posição na tela e toca na hora (repete se ele saiu do lugar entre a leitura e o toque)
+  await expect(async () => {
+    // fica perto dele a cada tentativa (ele pode ter saído andando para caçar)
+    const h = (await api(page, (a) => a.heroes()))[0]!;
+    await page.evaluate(
+      (p) => (window.__RPGZIM__ as { teleport(x: number, y: number): void }).teleport(p.x, p.y),
+      { x: h.x, y: h.y + 2 },
+    );
+    await page.waitForTimeout(250);
+    const pos = await page.evaluate(
+      (id) => (window.__RPGZIM__ as { screenOf(id: string): { x: number; y: number } | null }).screenOf(id),
+      hero.id,
+    );
+    expect(pos).not.toBeNull();
+    await page.touchscreen.tap(pos!.x, pos!.y);
+    await expect(page.getByTestId('actor-menu')).toBeVisible({ timeout: 1000 });
+  }).toPass({ timeout: 15_000 });
+  // mini mapa: toque num lugar distante -> fecha o painel e caminha até lá
+  // logo depois de outro toque (o navegador descartaria o "click" como toque duplo): o botão responde mesmo assim
+  await page.getByTestId('btn-minimap').tap();
+  await expect(page.getByTestId('minimap-panel')).toBeVisible();
+  // arrastar o mapa (sem soltar num ponto) só olha em volta: o painel continua aberto e o mapa rolou
+  const box = (await page.getByTestId('minimap-panel').boundingBox())!;
+  const scrollOf = () =>
+    page.evaluate(() => {
+      const el = document.querySelector('[data-testid=minimap-image]')!.parentElement!;
+      return el.scrollLeft + el.scrollTop;
+    });
+  const before = await scrollOf();
+  await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.5 - 90, box.y + box.height * 0.5 - 60, { steps: 6 });
+  await page.mouse.up();
+  expect(await scrollOf()).not.toBe(before);
+  await expect(page.getByTestId('minimap-panel')).toBeVisible();
+  await page.getByTestId('minimap-zoom').tap();
+  const img = (await page.getByTestId('minimap-image').boundingBox())!;
+  await page.touchscreen.tap(img.x + img.width * 0.6, img.y + img.height * 0.3);
+  await expect(page.getByTestId('minimap-panel')).toHaveCount(0);
+  await expect.poll(async () => (await api(page, (a) => a.walkGoal())) !== null).toBe(true);
+  // personagens online: chama o Boladex para o grupo
+  await page.getByTestId('btn-players').tap();
+  await expect(page.getByTestId('players-panel')).toContainText('Boladex');
+  await page.getByTestId(`player-invite-${hero.id}`).tap();
+  await expect(page.getByTestId(`player-party-${hero.id}`)).toBeVisible();
+});
+
+test('mobile: atalho segurado repete e PARA ao soltar; vãos entre atalhos não andam; joystick por cima do HUD; mochila sem rolagem', async ({
+  page,
+}, info) => {
+  test.skip(info.project.name !== 'mobile', 'somente emulação mobile');
+  await createCharacter(page, 'druid', 'Toque');
+  // perto de um slime (a magia de alvo sem alvo mira o inimigo mais próximo, até 7 tiles)
+  await api(page, (a) => a.teleport(216, 158));
+  await api(page, (a) => a.teleportNear('slime', 4));
+  await page.waitForTimeout(500);
+  const fired = () =>
+    page.evaluate(() => {
+      const a = (window as unknown as { __RPGZIM__: { castLog(): unknown[]; itemLog(): unknown[] } })
+        .__RPGZIM__;
+      return a.castLog().length + a.itemLog().length;
+    });
+  const clear = () =>
+    page.evaluate(() =>
+      (window as unknown as { __RPGZIM__: { clearCastLog(): void } }).__RPGZIM__.clearCastLog(),
+    );
+
+  // 1) teclado 3x3 de atalhos no canto inferior direito (sem botão de ataque; a seleção de jogador fica acima):
+  // nenhum ponto dentro dele (botões e vãos) cai na camada do mapa
+  const gaps = await page.evaluate(() => {
+    const grid = document.querySelector('[data-testid=touch-grid]')!;
+    const b = grid.getBoundingClientRect();
+    let onMap = 0;
+    let total = 0;
+    for (let y = b.top + 1; y < b.bottom - 1; y += 4)
+      for (let x = b.left + 1; x < b.right - 1; x += 4) {
+        total++;
+        if (document.elementFromPoint(x, y)?.closest('[data-testid=map-input]')) onMap++;
+      }
+    const sel = document.querySelector('[data-testid=select-actor-button]')!.getBoundingClientRect();
+    const slots = [...grid.querySelectorAll('button')];
+    // ordem de leitura 1 2 3 / 4 5 6 / 7 8 9: cada número à direita ou abaixo do anterior
+    const cells = [
+      ...grid.querySelectorAll('[data-testid^=slot-], [data-testid^=spell-], [data-testid^=potion-]'),
+    ].map((e) => e.getBoundingClientRect());
+    const ordered = cells.every(
+      (r, i) => i === 0 || (i % 3 === 0 ? r.top > cells[i - 1]!.top : r.left > cells[i - 1]!.left),
+    );
+    return {
+      onMap,
+      total,
+      slots: slots.length,
+      ordered,
+      noAttack: !document.querySelector('[data-testid=attack-button]'),
+      selAbove: sel.bottom <= b.top + 1,
+      corner: window.innerWidth - b.right < 24 && window.innerHeight - b.bottom < 40,
+    };
+  });
+  expect(gaps.total).toBeGreaterThan(100);
+  expect(gaps.onMap).toBe(0);
+  expect(gaps.slots).toBe(9); // só os 9 atalhos (1–9)
+  expect(gaps.ordered).toBe(true);
+  expect(gaps.noAttack).toBe(true);
+  expect(gaps.selAbove).toBe(true);
+  expect(gaps.corner).toBe(true);
+
+  // 2) segurar o atalho da magia repete a cada recarga; soltar encerra (nada dispara depois)
+  const box = (await page.getByTestId('spell-earth_thorn').boundingBox())!;
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+  const cdp = await page.context().newCDPSession(page);
+  const gameNow = () =>
+    page.evaluate(() => (window as unknown as { __RPGZIM__: { now(): number } }).__RPGZIM__.now());
+  await clear();
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: cx, y: cy }] });
+  // o relógio do jogo pode andar mais devagar que o real (quadros lentos): espera os disparos, não segundos
+  await expect.poll(fired, { timeout: 20_000 }).toBeGreaterThanOrEqual(2);
+  await cdp.send('Input.dispatchTouchEvent', {
+    type: 'touchMove',
+    touchPoints: [{ x: cx - 150, y: cy - 250 }],
+  }); // solta com o dedo fora do botão
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await clear();
+  // depois de soltar, passam 4,5 s de JOGO (mais que duas recargas) e nada dispara
+  const t0 = await gameNow();
+  await expect.poll(async () => (await gameNow()) - t0, { timeout: 30_000 }).toBeGreaterThan(4500);
+  expect(await fired()).toBe(0);
+
+  // 3) joystick: aparece por cima de tudo (fora da árvore do HUD) enquanto arrasta
+  const vp = page.viewportSize()!;
+  const ox = vp.width * 0.2;
+  const oy = vp.height * 0.7;
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: ox, y: oy }] });
+  for (let i = 1; i <= 5; i++)
+    await cdp.send('Input.dispatchTouchEvent', {
+      type: 'touchMove',
+      touchPoints: [{ x: ox + i * 10, y: oy }],
+    });
+  await expect(page.getByTestId('joystick')).toBeVisible();
+  const z = await page
+    .getByTestId('joystick')
+    .evaluate((el) => ({ inHud: !!el.closest('[data-testid=hud]'), z: Number(getComputedStyle(el).zIndex) }));
+  expect(z.inHud).toBe(false);
+  expect(z.z).toBeGreaterThanOrEqual(50);
+  // o navegador "perdeu" o fim do toque (troca de app, gesto do sistema): o joystick se solta sozinho
+  await page.evaluate(() => window.dispatchEvent(new TouchEvent('touchend', { touches: [], bubbles: true })));
+  await expect(page.getByTestId('joystick')).toHaveCount(0, { timeout: 3000 });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  // depois de resetar, um novo joystick funciona normalmente
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: ox, y: oy }] });
+  for (let i = 1; i <= 5; i++)
+    await cdp.send('Input.dispatchTouchEvent', {
+      type: 'touchMove',
+      touchPoints: [{ x: ox + i * 10, y: oy }],
+    });
+  await expect(page.getByTestId('joystick')).toBeVisible();
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await expect(page.getByTestId('joystick')).toHaveCount(0);
+
+  // 4) mochila: detalhes e ações à vista, sem rolagem e dentro do painel
+  await page.getByTestId('btn-inventory').tap();
+  await page.getByTestId('bag-0').tap();
+  const lay = await page.evaluate(() => {
+    const dlg = document.querySelector('[role=dialog]')!.getBoundingClientRect();
+    const act = document.querySelector('[data-testid=bag-actions]')!.getBoundingClientRect();
+    const det = document.querySelector('[data-testid=item-details]')!.getBoundingClientRect();
+    const scrollers = [...document.querySelectorAll('[role=dialog] *')].filter(
+      (e) => e.scrollHeight > e.clientHeight + 2 && /auto|scroll/.test(getComputedStyle(e).overflowY),
+    ).length;
+    return {
+      actionsInside: act.bottom <= dlg.bottom + 1 && act.top >= dlg.top,
+      detailsInside: det.bottom <= dlg.bottom + 1,
+      scrollers,
+    };
+  });
+  expect(lay.actionsInside).toBe(true);
+  expect(lay.detailsInside).toBe(true);
+  expect(lay.scrollers).toBe(0);
+  await expect(page.getByTestId('bag-organize')).toBeVisible();
+});
+
+test('PK: caveira e PZ lock no HUD, tamanho do nome, balão acima do nome e 9 atalhos', async ({
+  page,
+}, info) => {
+  await createCharacter(page, 'paladin', 'Marca');
+  const isMobile = info.project.name === 'mobile';
+  // 9 atalhos configuráveis (1–9), na mesma ordem no celular e no desktop
+  await expect(
+    page.locator('[data-testid^=slot-], [data-testid^=spell-], [data-testid^=potion-]'),
+  ).toHaveCount(9);
+  // o arco não usa mais flechas: não há contador
+  await expect(page.getByTestId('ammo-pill')).toHaveCount(0);
+  // caveira branca + PZ lock aparecem ao lado do painel de status
+  await page.evaluate(() =>
+    (window.__RPGZIM__ as unknown as { setPk(k: string, ms: number): void }).setPk('white', 100_000),
+  );
+  await expect(page.getByTestId('pk-skull')).toBeVisible();
+  await expect(page.getByTestId('pk-pzlock')).toContainText('PZ');
+  // tamanho do nome: fixo e menor no celular (11 px); no desktop cresce com o zoom (tile de 64 px → 18 px)
+  const nameCss = () =>
+    page.evaluate(() => {
+      const a = window.__RPGZIM__ as unknown as { worldTexts(): { text: string; fontSize: string }[] };
+      const t = a.worldTexts().find((x) => x.text === 'Marca');
+      return t ? parseFloat(t.fontSize) / window.devicePixelRatio : 0;
+    });
+  if (isMobile) expect(await nameCss()).toBeLessThanOrEqual(12.5);
+  else {
+    expect(await nameCss()).toBeGreaterThanOrEqual(17);
+    // monitor maior: o personagem fica maior na tela (tile de 80 px) e o nome acompanha
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    await expect.poll(nameCss).toBeGreaterThanOrEqual(21);
+  }
+  // o balão de fala fica acima do nome (antes ficava 2 px acima do desenho e cobria o nome)
+  type Box = { x: number; y: number; w: number; h: number };
+  await page.evaluate(() =>
+    (window.__RPGZIM__ as unknown as { speak(id: string, t: string): boolean }).speak(
+      'player',
+      'Alguém quer caçar comigo nos campos?',
+    ),
+  );
+  // folga entre a ponta do balão e o topo do nome (≥ 0: não cobre); null até o balão ser posicionado
+  const gap = () =>
+    page.evaluate(() => {
+      const a = window.__RPGZIM__ as unknown as {
+        bubbles(): { y: number }[];
+        nameBox(t: string): Box | null;
+      };
+      const b = a.bubbles()[0];
+      const n = a.nameBox('Marca');
+      return b && n && b.y !== 0 ? n.y + 0.5 - (b.y + 1) : null;
+    });
+  await expect.poll(gap).toBeGreaterThanOrEqual(0);
+});
+
+test('tela inicial: filtro por nome e vocação, ordem por nível; criar personagem de dentro do jogo (joga com a IA)', async ({
+  page,
+}, info) => {
+  test.skip(info.project.name !== 'desktop', 'um projeto basta');
+  await createCharacter(page, 'knight', 'Cavaleira');
+  // de dentro do jogo: Personagens online → Criar personagem (nome + vocação) → nasce jogando com a IA
+  await page.getByTestId('btn-players').click();
+  await page.getByTestId('create-hero-open').click();
+  await page.getByTestId('create-hero-name').fill('Herbalista');
+  await page.getByTestId('create-hero-voc-druid').click();
+  await page.getByTestId('create-hero-submit').click();
+  await expect(page.getByTestId('players-panel')).toContainText('Herbalista');
+  const heroes = await page.evaluate(() =>
+    (window.__RPGZIM__ as { heroes(): { name?: string; id: string }[] }).heroes(),
+  );
+  expect(heroes.some((h) => /herbalista/i.test(h.name ?? h.id))).toBe(true);
+  // nome repetido é recusado
+  await page.getByTestId('create-hero-open').click();
+  await page.getByTestId('create-hero-name').fill('Herbalista');
+  await page.getByTestId('create-hero-submit').click();
+  await expect(page.getByTestId('create-hero-form')).toContainText('Já existe');
+  // a tela inicial mostra o novo personagem; filtros por nome e vocação
+  await page.goto('/?debug');
+  await expect(page.getByTestId('slot-search')).toBeVisible();
+  await page.getByTestId('slot-search').fill('herba');
+  const slots = page.locator('button[data-testid^="slot-"]');
+  await expect(slots).toHaveCount(1);
+  await expect(slots.first()).toContainText('Herbalista');
+  await page.getByTestId('slot-search').fill('');
+  await page.getByTestId('slot-vocation').selectOption('knight');
+  await expect(page.locator('button[data-testid^="slot-"]', { hasText: 'Herbalista' })).toHaveCount(0);
+  await expect(page.locator('button[data-testid^="slot-"]', { hasText: 'Cavaleira' })).toHaveCount(1);
+});
+
+test('loja: filtros por categoria e "Posso usar", ordem por nível; atalhos: os 9 espaços visíveis', async ({
+  page,
+}, info) => {
+  await createCharacter(page, 'paladin', 'Filtradora');
+  await api(page, (a) => a.teleport(165, 152));
+  await page.keyboard.press('KeyE').catch(() => undefined);
+  if (info.project.name === 'mobile') await page.getByTestId('interact-button').tap().catch(() => undefined);
+  await expect(page.getByTestId('npc-dialog')).toBeVisible();
+  await page.getByRole('button', { name: 'Ver mercadorias' }).click();
+  await expect(page.getByTestId('shop-filters')).toBeVisible();
+  const rows = page.locator('[data-testid^="shop-item-"]');
+  const total = await rows.count();
+  // "Posso usar": só o que um Paladin nível 1 usa agora (menos itens, e nenhum com "!" de bloqueio)
+  await page.getByTestId('shop-mine').click();
+  const mine = await rows.count();
+  expect(mine).toBeGreaterThan(0);
+  expect(mine).toBeLessThan(total);
+  await page.getByTestId('shop-mine').click();
+  // categoria: só capacetes, do menor nível para o maior
+  await page.getByTestId('shop-cat-helmet').click();
+  const levels = await rows.evaluateAll((els) =>
+    els.map((e) => Number(/nv (\d+)/.exec(e.textContent ?? '')?.[1] ?? 1)),
+  );
+  expect(levels.length).toBeGreaterThan(0);
+  expect([...levels].sort((a, b) => a - b)).toEqual(levels);
+  await page.screenshot({ path: info.outputPath('loja.png') });
+  await page.locator('[role=dialog] button[aria-label=Fechar]').first().click();
+  // atalhos: os 9 espaços inteiros dentro do painel
+  if (await page.getByTestId('btn-hotbar-config').isVisible()) await page.getByTestId('btn-hotbar-config').click();
+  else {
+    await page.getByTestId('btn-settings').click();
+    await page.getByTestId('settings-hotbar').click();
+  }
+  await expect(page.getByTestId('hotbar-panel')).toBeVisible();
+  const dialog = (await page.locator('[role=dialog]').boundingBox())!;
+  for (let i = 0; i < 9; i++) {
+    const b = (await page.getByTestId(`hotbar-pick-${i}`).boundingBox())!;
+    expect(b.x).toBeGreaterThanOrEqual(dialog.x);
+    expect(b.x + b.width).toBeLessThanOrEqual(dialog.x + dialog.width);
+  }
+  await page.screenshot({ path: info.outputPath('atalhos.png') });
+});
+
+test('favoritos de atalhos: botão troca entre 3 conjuntos, o menu edita o ativo e a tecla 0 também troca', async ({
+  page,
+}, info) => {
+  await createCharacter(page, 'knight', 'Favorita');
+  const isMobile = info.project.name === 'mobile';
+  const btn = page.getByTestId('hotbar-set-button');
+  await expect(btn).toBeVisible();
+  await expect(page.getByTestId('hotbar-set-current')).toHaveText('1');
+  // o botão cabe na tela e não cobre os atalhos
+  const vp = page.viewportSize()!;
+  const b = (await btn.boundingBox())!;
+  expect(b.x).toBeGreaterThanOrEqual(0);
+  expect(b.x + b.width).toBeLessThanOrEqual(vp.width);
+  expect(b.y + b.height).toBeLessThanOrEqual(vp.height);
+  const first = (await page.getByTestId('slot-0').count()) ? page.getByTestId('slot-0') : page.locator('[data-testid^=spell-]').first();
+  const k = (await first.boundingBox())!;
+  expect(b.y + b.height <= k.y + 1 || b.x + b.width <= k.x + 1 || b.x >= k.x + k.width - 1).toBe(true);
+  await page.screenshot({ path: info.outputPath('favoritos.png') });
+  // toque: vai para o conjunto 2 (que começa com o padrão da vocação)
+  await btn.dispatchEvent('pointerdown');
+  await expect(page.getByTestId('hotbar-set-current')).toHaveText('2');
+  // no menu, o conjunto 2 está ativo; esvazia o atalho 1 só nele
+  if (isMobile) {
+    await page.getByTestId('btn-settings').click();
+    await page.getByTestId('settings-hotbar').click();
+  } else await page.getByTestId('btn-hotbar-config').click();
+  await expect(page.getByTestId('hotbar-set-1')).toHaveClass(/btn-gold/);
+  await page.getByTestId('hotbar-pick-0').click();
+  await page.getByTestId('hotbar-clear').click();
+  // trocar de conjunto dentro do menu também vale (volta ao 1: atalho 1 cheio)
+  await page.getByTestId('hotbar-set-0').click();
+  await expect(page.getByTestId('hotbar-current')).not.toHaveText('Vazio');
+  await page.getByTestId('hotbar-set-1').click();
+  await page.getByTestId('hotbar-pick-0').click();
+  await expect(page.getByTestId('hotbar-current')).toHaveText('Vazio');
+  await page.locator('[role=dialog] button[aria-label=Fechar]').first().click();
+  await expect(page.getByLabel(/Atalho 1 vazio/)).toBeVisible();
+  // tecla 0 dá a volta: 2 -> 3 -> 1; no conjunto 1 o atalho 1 continua preenchido
+  await page.keyboard.press('Digit0');
+  await expect(page.getByTestId('hotbar-set-current')).toHaveText('3');
+  await page.keyboard.press('Digit0');
+  await expect(page.getByTestId('hotbar-set-current')).toHaveText('1');
+  await expect(page.getByLabel(/Atalho 1 vazio/)).toHaveCount(0);
+});

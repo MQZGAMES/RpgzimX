@@ -1,0 +1,387 @@
+// NPCs, diálogos e lojas.
+import type { NpcDef, ShopDef } from '../domain/entities/definitions';
+import { potionBuyback, withLateStock } from './npcs.gear';
+import { ITEMS } from './items';
+import { adjustedPrice } from './pricing';
+
+const close = { label: 'Até logo', action: 'close' } as const;
+
+const list: NpcDef[] = [
+  {
+    id: 'priest',
+    name: 'Sacerdote Oriel',
+    title: 'Guardião do Templo',
+    sprite: 'npc_priest',
+    wanderRadius: 0,
+    greeting: 'Bem-vindo, viajante!',
+    dialog: [
+      {
+        id: 'start',
+        text: 'Que a Aurora o guie! Você despertou no Templo de Pedraluz. Dentro do templo, das casas e das lojas ninguém pode atacá-lo. Posso ensinar o básico?',
+        options: [
+          { label: 'Como me movo?', action: 'next', goto: 'move' },
+          { label: 'Como lutar?', action: 'next', goto: 'combat' },
+          { label: 'Magias e evolução', action: 'next', goto: 'progress' },
+          { label: 'Peço uma bênção', action: 'heal' },
+          close,
+        ],
+      },
+      {
+        id: 'move',
+        text: 'No celular, arraste o polegar no lado esquerdo da tela (joystick) ou toque no chão para caminhar até lá. No computador, use WASD ou as setas. Portas abrem sozinhas quando você se aproxima.',
+        options: [{ label: 'E o combate?', action: 'next', goto: 'combat' }, close],
+      },
+      {
+        id: 'combat',
+        text: 'Toque em um monstro (ou use o botão de alvo / Tab) para selecioná-lo. Você atacará automaticamente enquanto ele estiver ao alcance da sua arma. A área de caça fica a leste, passando o portão da vila.',
+        options: [{ label: 'E as magias?', action: 'next', goto: 'progress' }, close],
+      },
+      {
+        id: 'progress',
+        text: 'Magias gastam mana e têm recarga; use a barra de magias ou as teclas 1 a 4. Lutar evolui suas skills, conjurar evolui seu Magic Level e derrotar monstros dá experiência. Venda o loot na vila e compre equipamentos melhores!',
+        options: [{ label: 'Peço uma bênção', action: 'heal' }, close],
+      },
+    ],
+  },
+  {
+    id: 'smith',
+    name: 'Mestre Ferraz',
+    title: 'Ferreiro',
+    sprite: 'npc_smith',
+    shopId: 'equipment',
+    wanderRadius: 0,
+    greeting: 'Aço bom, preço justo!',
+    dialog: [
+      {
+        id: 'start',
+        text: 'O martelo não para! Armas, escudos e armaduras para qualquer vocação. Também compro equipamentos usados.',
+        options: [{ label: 'Ver mercadorias', action: 'openShop' }, close],
+      },
+    ],
+  },
+  {
+    id: 'alchemist',
+    name: 'Alquimista Selene',
+    title: 'Poções e artefatos',
+    sprite: 'npc_alchemist',
+    shopId: 'potions',
+    wanderRadius: 0,
+    greeting: 'Cuidado com o caldeirão!',
+    dialog: [
+      {
+        id: 'start',
+        text: 'Poções de vida e mana, varinhas, cajados e acessórios encantados. Gosma de musgo também me interessa.',
+        options: [{ label: 'Ver mercadorias', action: 'openShop' }, close],
+      },
+    ],
+  },
+  {
+    id: 'merchant',
+    name: 'Mercador Ilário',
+    title: 'Mercador',
+    sprite: 'npc_merchant',
+    shopId: 'general',
+    wanderRadius: 0,
+    greeting: 'Compro tudo que você caçar!',
+    dialog: [
+      {
+        id: 'start',
+        text: 'Presas, couros, orelhas de goblin... compro todo tipo de despojo. E vendo mantimentos.',
+        options: [{ label: 'Negociar', action: 'openShop' }, close],
+      },
+    ],
+  },
+  {
+    id: 'banker',
+    name: 'Banqueira Clara',
+    title: 'Banco de Pedraluz',
+    sprite: 'npc_banker',
+    wanderRadius: 0,
+    greeting: 'Seus bens estão seguros aqui.',
+    dialog: [
+      {
+        id: 'start',
+        text: 'Bem-vindo ao Banco de Pedraluz! Guarde ouro e itens no seu depósito: nada se perde aqui, nem se você cair em batalha. Para comprar e vender com outros aventureiros, fale com o Corretor Tadeu, aqui ao lado.',
+        options: [
+          { label: 'Abrir depósito', action: 'openDepot' },
+          { label: 'Como funciona?', action: 'next', goto: 'help' },
+          close,
+        ],
+      },
+      {
+        id: 'help',
+        text: 'Toque num item para ver os atributos e guardá-lo ou retirá-lo; toque duas vezes para guardar ou retirar direto. "Guardar loot" leva tudo, menos poções. O ouro pode ser depositado e sacado quando quiser.',
+        options: [{ label: 'Abrir depósito', action: 'openDepot' }, close],
+      },
+    ],
+  },
+  {
+    id: 'guard',
+    name: 'Guarda Tomé',
+    title: 'Sentinela do portão leste',
+    sprite: 'npc_guard',
+    wanderRadius: 0,
+    guard: true,
+    greeting: 'Alto lá! Ah, é você.',
+    dialog: [
+      {
+        id: 'start',
+        text: 'Pedraluz fica no meio do mundo: quanto mais longe da vila, em qualquer direção, mais fortes as criaturas. Por este portão, a leste: os Campos do Leste (slimes e o acampamento goblin), a Savana Dourada (chacais, saqueadores e orcs), o Mar de Areia (escorpiões, hienas, rinocerontes e as múmias das ruínas), as Dunas Rubras e, no fim, o Vulcão Adormecido. O caminho é longo e não há abrigo lá fora: o único lugar protegido é aqui na vila, então leve poções para a volta. Atenção: só dentro das construções ninguém pode lutar; nas ruas, cuidado com monstros e com o PK.',
+        options: [close],
+      },
+    ],
+  },
+  {
+    id: 'broker',
+    name: 'Corretor Tadeu',
+    title: 'Mercado de Pedraluz',
+    sprite: 'npc_broker',
+    wanderRadius: 0,
+    greeting: 'Compre e venda com outros aventureiros!',
+    dialog: [
+      {
+        id: 'start',
+        text: 'Aqui no Mercado de Pedraluz os aventureiros negociam equipamentos e poções entre si. Quem compra paga o menor preço anunciado; quem vende recebe a maior oferta. Materiais de criaturas, só nas lojas.',
+        options: [
+          { label: 'Abrir mercado', action: 'openMarket' },
+          { label: 'Como funciona?', action: 'next', goto: 'help' },
+          close,
+        ],
+      },
+      {
+        id: 'help',
+        text: 'Escolha Comprar ou Vender, a categoria e o item. Você vê todas as ofertas: compre na hora pelo menor preço ou deixe uma oferta dizendo quanto paga; venda na hora para quem já quer comprar ou anuncie pelo preço que quiser — eu sugiro os valores pela oferta e procura. O que você compra vai para a mochila; o ouro das vendas, para o banco.',
+        options: [{ label: 'Abrir mercado', action: 'openMarket' }, close],
+      },
+    ],
+  },
+  {
+    id: 'guard_south',
+    name: 'Guarda Lia',
+    title: 'Sentinela do portão sul',
+    sprite: 'npc_guard',
+    wanderRadius: 0,
+    guard: true,
+    greeting: 'Tudo calmo por aqui.',
+    dialog: [
+      {
+        id: 'start',
+        text: 'Ao sul: a Margem do Pântano (sapos e lodos), o Pântano Sombrio (aranhas e sapos do brejo), a Selva Alagada (crocodilos, serpes e trolls), o Pântano Corrompido e, no fim, a Necrópole Esquecida. Se alguma criatura passar do portão, a guarda dá conta — mas quem a trouxe não leva nada por isso.',
+        options: [close],
+      },
+    ],
+  },
+  {
+    id: 'guard_north',
+    name: 'Guarda Bento',
+    title: 'Sentinela do portão norte',
+    sprite: 'npc_guard',
+    wanderRadius: 0,
+    guard: true,
+    greeting: 'Agasalhe-se se for longe.',
+    dialog: [
+      {
+        id: 'start',
+        text: 'Ao norte o frio aumenta a cada passo: os Campos do Norte (slimes e javalis), a Taiga dos Pinheiros (lobos, bandidos e ursos), a Tundra Uivante (lobos de gelo, ursos das cavernas e o yeti), a Geleira Eterna e, no topo, o Pico do Inverno. Lá fora não há onde se abrigar: descanso, só no Templo e nas casas da vila.',
+        options: [close],
+      },
+    ],
+  },
+  {
+    id: 'guard_west',
+    name: 'Guarda Íris',
+    title: 'Sentinela do portão oeste',
+    sprite: 'npc_guard',
+    wanderRadius: 0,
+    guard: true,
+    greeting: 'As montanhas chamam?',
+    dialog: [
+      {
+        id: 'start',
+        text: 'A oeste: as Colinas Verdes, as Ruínas Antigas (esqueletos, aranhas e lobos), as Montanhas de Ferro (xamãs orcs, o Chefe Goblin, cavaleiros sombrios e liches), a Charneca das Presas (lobos atrozes, ogros e o dragão jovem) e, no fim, o Abismo Primordial. Quanto mais longe da vila, mais fortes as criaturas.',
+        options: [close],
+      },
+    ],
+  },
+  {
+    id: 'farmer',
+    name: 'Seu Joaquim',
+    title: 'Fazendeiro',
+    sprite: 'npc_farmer',
+    wanderRadius: 3,
+    greeting: 'Bom dia!',
+    dialog: [
+      {
+        id: 'start',
+        text: 'Os javalis andam arrancando minhas cercas. Se trouxer carne de javali, o mercador da praça paga bem!',
+        options: [close],
+      },
+    ],
+  },
+  {
+    id: 'villager',
+    name: 'Dona Rosa',
+    title: 'Moradora',
+    sprite: 'npc_villager',
+    wanderRadius: 2,
+    greeting: 'Entre, a casa é sua!',
+    dialog: [
+      {
+        id: 'start',
+        text: 'Pode explorar as casas da vila à vontade. Dica: quando estiver com pouca vida, volte ao templo e peça uma bênção ao Sacerdote Oriel. E guarde seus tesouros no Banco de Pedraluz, a oeste da avenida!',
+        options: [close],
+      },
+    ],
+  },
+];
+
+export const NPCS: Readonly<Record<string, NpcDef>> = Object.fromEntries(list.map((n) => [n.id, n]));
+
+const sellPct = (price: number) => Math.max(1, Math.round(price * 0.35));
+const equipmentSellsBase: [string, number][] = [
+  ['training_sword', 40],
+  ['training_axe', 40],
+  ['training_club', 40],
+  ['training_spear', 40],
+  ['sword_short', 60],
+  ['axe_hand', 95],
+  ['club_wood', 25],
+  ['mace_iron', 280],
+  ['sword_iron', 340],
+  ['axe_battle', 520],
+  ['bow_hunting', 130],
+  ['spear_throwing', 95],
+  ['bow_composite', 560],
+  ['shield_wood', 45],
+  ['shield_iron', 320],
+  ['helmet_leather', 35],
+  ['helmet_iron', 190],
+  ['armor_leather', 75],
+  ['armor_chain', 320],
+  ['legs_leather', 40],
+  ['legs_chain', 240],
+  ['boots_leather', 30],
+  ['boots_swift', 650],
+  // nível 8+
+  ['helmet_steel', 800],
+  ['armor_scale', 1000],
+  ['shield_steel', 1000],
+  ['sword_steel', 900],
+  ['boots_steel', 700],
+  ['hammer_war', 1100],
+  ['legs_plate', 1100],
+  ['bow_elven', 1400],
+  ['spear_royal', 1500],
+  ['axe_double', 1600],
+  ['ring_power', 1600],
+  ['amulet_guard', 1900],
+  ['sword_runic', 2400],
+  ['armor_ranger', 2500],
+  ['armor_plate', 2700],
+  ['helmet_royal', 2600],
+  ['legs_royal', 2900],
+  ['ring_life', 2900],
+  ['shield_tower', 3200],
+  ['morningstar', 3300],
+  ['boots_wind', 3600],
+  ['bow_royal', 4400],
+  ['axe_executioner', 5000],
+  ['sword_dragon', 6200],
+  ['armor_royal', 6800],
+];
+const potionSellsBase: [string, number][] = [
+  ['training_wand', 40],
+  ['potion_health', 40],
+  ['potion_mana', 45],
+  ['potion_health_great', 100],
+  ['potion_mana_great', 120],
+  ['wand_ember', 150],
+  ['rod_sprout', 150],
+  ['wand_storm', 760],
+  ['rod_frost', 760],
+  ['spellbook', 220],
+  ['hat_mage', 95],
+  ['robe_apprentice', 130],
+  ['robe_druid', 130],
+  ['ring_vigor', 380],
+  ['amulet_mana', 420],
+  ['potion_health_supreme', 200],
+  ['potion_mana_supreme', 240],
+  // nível 8+
+  ['legs_silk', 600],
+  ['hat_wizard', 900],
+  ['robe_mystic', 1100],
+  ['spellbook_adept', 1300],
+  ['ring_wisdom', 1600],
+  ['wand_inferno', 2100],
+  ['rod_thorns', 2100],
+  ['amulet_archmage', 4000],
+  ['spellbook_master', 4200],
+  ['robe_archmage', 4600],
+  ['wand_void', 5400],
+  ['rod_glacier', 5400],
+];
+
+// preços com os ajustes de nov/2026 (poção de mana e equipamento dos níveis 8–23, ver pricing.ts)
+const adjust = (rows: [string, number][]): [string, number][] => rows.map(([id, p]) => [id, adjustedPrice(ITEMS[id], p)]);
+const equipmentSells = adjust(equipmentSellsBase);
+const potionSells = adjust(potionSellsBase);
+
+const list2: ShopDef[] = [
+  {
+    id: 'equipment',
+    name: 'Ferraria de Pedraluz',
+    sells: [...equipmentSells.map(([itemId, price]) => ({ itemId, price })), { itemId: 'amulet_loss', price: 10000 }],
+    buys: [...equipmentSells.map(([itemId, price]) => ({ itemId, price: sellPct(price) })), { itemId: 'dagger', price: 10 }],
+  },
+  {
+    id: 'potions',
+    name: 'Alquimia da Selene',
+    sells: [...potionSells.map(([itemId, price]) => ({ itemId, price })), { itemId: 'amulet_loss', price: 10000 }],
+    buys: [
+      // poções voltam por 35% do preço (POTION_BUYBACK); o resto pela porcentagem normal de revenda
+      ...potionSells.map(([itemId, price]) => ({
+        itemId,
+        price: itemId.startsWith('potion') ? potionBuyback(price) : sellPct(price),
+      })),
+      { itemId: 'slime_gel', price: 5 },
+      { itemId: 'goblin_charm', price: 70 },
+      { itemId: 'toad_venom', price: 14 },
+      { itemId: 'spider_silk', price: 30 },
+      { itemId: 'scorpion_stinger', price: 120 },
+      { itemId: 'shaman_totem', price: 160 },
+      { itemId: 'lich_dust', price: 500 },
+    ],
+  },
+  {
+    id: 'general',
+    name: 'Banca do Ilário',
+    sells: [
+      { itemId: 'amulet_loss', price: 10000 },
+      { itemId: 'meat', price: 8 },
+      { itemId: 'potion_health', price: 40 },
+    ],
+    buys: [
+      { itemId: 'boar_tusk', price: 18 },
+      { itemId: 'boar_hide', price: 12 },
+      { itemId: 'goblin_ear', price: 20 },
+      { itemId: 'goblin_charm', price: 65 },
+      { itemId: 'slime_gel', price: 4 },
+      { itemId: 'meat', price: 3 },
+      { itemId: 'dagger', price: 9 },
+      { itemId: 'arrow', price: 1 },
+      { itemId: 'arrow_metal', price: 3 },
+      { itemId: 'wolf_pelt', price: 22 },
+      { itemId: 'bone_fragment', price: 10 },
+      { itemId: 'bandit_mask', price: 40 },
+      { itemId: 'bear_claw', price: 60 },
+      { itemId: 'orc_tooth', price: 90 },
+      { itemId: 'ice_fang', price: 220 },
+      { itemId: 'dark_emblem', price: 300 },
+      { itemId: 'troll_hide', price: 380 },
+      { itemId: 'dragon_scale', price: 700 },
+    ],
+  },
+];
+
+export const SHOPS: Readonly<Record<string, ShopDef>> = Object.fromEntries(withLateStock(list2).map((s) => [s.id, s]));

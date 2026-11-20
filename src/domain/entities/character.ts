@@ -1,0 +1,70 @@
+// Estado persistente do personagem (o que é salvo). Valores derivados (vida máxima, ataque etc.)
+// são sempre recalculados a partir deste estado + definições, nunca gravados.
+import type { EquipSlot, SkillId } from './definitions';
+import type { Facing } from '../value-objects/direction';
+import type { ItemId, VocationId } from '../value-objects/ids';
+
+export interface ItemStack {
+  itemId: ItemId;
+  count: number;
+  sellLocked?: boolean;
+}
+
+export interface SkillState {
+  level: number;
+  /** Tentativas acumuladas (para Magic Level: mana gasta) rumo ao próximo nível. */
+  tries: number;
+}
+
+export type SettingValue = string | number | boolean;
+export interface CharacterSettings {
+  auto?: Record<string, SettingValue>;
+  party?: Record<string, SettingValue>;
+}
+
+export interface CharacterState {
+  id: string;
+  name: string;
+  vocation: VocationId;
+  level: number;
+  /** Experiência total acumulada. */
+  experience: number;
+  health: number;
+  mana: number;
+  skills: Record<SkillId, SkillState>;
+  /** Mochila com capacidade fixa: null = espaço vazio. */
+  inventory: (ItemStack | null)[];
+  equipment: Partial<Record<EquipSlot, ItemStack>>;
+  gold: number;
+  /** Depósito do banco (capacidade fixa): itens guardados com segurança. */
+  depot: (ItemStack | null)[];
+  /** Ouro guardado no banco. */
+  bankGold: number;
+  position: { x: number; y: number };
+  facing: Facing;
+  /** Barra de atalhos (magias, itens, poções): é sempre o conjunto de favoritos ativo. */
+  hotbar: string[];
+  /** Conjunto de favoritos ativo (0 a 2) e os três conjuntos (o ativo é atualizado ao trocar; a verdade dele é `hotbar`). */
+  hotbarSet: number;
+  hotbarSets: string[][];
+  flags: Record<string, boolean>;
+  /** Estado de PK (caveira, PZ lock, mortes injustas), em tempo real para valer entre sessões. */
+  pk?: {
+    skull: 'white' | 'yellow' | 'red' | null;
+    skullUntil: number;
+    pzLockUntil: number;
+    unjust: number[];
+  };
+  stats: { monstersKilled: number; deaths: number; playTimeMs: number };
+  /**
+   * Configurações individuais deste personagem (valem só para ele e vão junto no save): ajudas automáticas
+   * (cura/poção/loot) e as regras de grupo que ele usa quando lidera. Só valores simples.
+   */
+  settings?: CharacterSettings;
+  /** Temporada em que o personagem joga (um save de temporada anterior recomeça do nível 1). */
+  season?: number;
+  /** Versão do mapa em que a posição foi salva (ver WORLD_VERSION). */
+  world?: number;
+  createdAt: number;
+  updatedAt: number;
+}

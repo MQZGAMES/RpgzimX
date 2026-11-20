@@ -1,0 +1,32 @@
+// Papéis dos heróis por vocação: como cada um luta (distância, magias), do que precisa estocar e o peso do dano
+// que a régua de ameaça deve contar. Dados puros — o cérebro (heroBrain) lê daqui.
+import type { VocationId } from '../../domain/value-objects/ids';
+
+export interface RoleProfile {
+  /** Luta de longe: mantém esta distância (tiles) de quem bate corpo a corpo; 0 = corpo a corpo. */
+  keepDistance: number;
+  /** Estoque de mana desejado, em múltiplos da mana máxima (0 = não compra). */
+  manaStock: number;
+  /** Multiplicador do dano por segundo na régua (magias e rajadas somam além do golpe básico). */
+  dpsMul: number;
+  /** Treina com a arma de treino quando está atrasado nas skills. */
+  trains: boolean;
+  /**
+   * Volta à vila só para repor mana (o ataque depende dela). O Paladino ataca com o arco sem mana: sem poção ele só
+   * deixa de usar magias e repõe a mana na próxima ida à vila por outro motivo.
+   */
+  manaTrips?: boolean;
+}
+
+export const ROLES: Readonly<Record<VocationId, RoleProfile>> = {
+  // o Knight também vive de magia (Golpe Brutal, Redemoinho de Aço): estoca mana pelo consumo real, sem ir à vila só
+  // por ela (a espada não gasta mana)
+  knight: { keepDistance: 0, manaStock: 2, dpsMul: 1.15, trains: true },
+  // o Paladino gasta mana em quase toda luta (Flecha Sagrada, Luz Restauradora): estoca pelo consumo real, como os magos
+  paladin: { keepDistance: 3, manaStock: 2, dpsMul: 1.2, trains: false },
+  // as magias dos magos crescem com a varinha: somam bem mais que o golpe básico (ver tests/tools/vocation-dps)
+  sorcerer: { keepDistance: 3, manaStock: 2.5, dpsMul: 2, trains: false, manaTrips: true },
+  druid: { keepDistance: 3, manaStock: 2.5, dpsMul: 1.75, trains: false, manaTrips: true },
+};
+
+export const isRanged = (v: VocationId): boolean => ROLES[v].keepDistance > 0;

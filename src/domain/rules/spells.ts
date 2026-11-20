@@ -1,0 +1,112 @@
+// Validação de magias: todas as condições são checadas antes de gastar mana ou iniciar cooldown.
+import type { SpellDef } from '../entities/definitions';
+import type { VocationId } from '../value-objects/ids';
+
+export type CastFailReason =
+  | 'dead'
+  | 'vocation'
+  | 'level'
+  | 'magicLevel'
+  | 'cooldown'
+  | 'noMana'
+  | 'noTarget'
+  | 'invalidTarget'
+  | 'outOfRange'
+  | 'noLineOfSight'
+  | 'protectionZone'
+  | 'weapon';
+
+export interface CastContext {
+  vocation: VocationId;
+  level: number;
+  magicLevel: number;
+  mana: number;
+  dead: boolean;
+  cooldownRemaining: number;
+  globalCooldownRemaining: number;
+  inProtectionZone: boolean;
+  /** Estado do alvo (para magias com alvo). */
+  target: {
+    exists: boolean;
+    alive: boolean;
+    hostile: boolean;
+    distance: number;
+    lineOfSight: boolean;
+  } | null;
+  weaponKind: 'melee' | 'distance' | 'wand';
+  /** Sem arma principal equipada: magias que pedem arma valem mesmo assim. */
+  unarmed?: boolean;
+}
+
+export type CastCheck = { ok: true } | { ok: false; reason: CastFailReason; detail?: string };
+
+/** Mana que a magia custa para um personagem deste nível (as de ataque dos magos sobem com o nível). */
+export function spellManaCost(spell: Pick<SpellDef, 'manaCost' | 'manaPerLevel'>, level: number): number {
+  return spell.manaCost + Math.floor(Math.max(0, level) * (spell.manaPerLevel ?? 0));
+}
+
+export function validateCast(spell: SpellDef, ctx: CastContext): CastCheck {
+  if (ctx.dead) return { ok: false, reason: 'dead' };
+  if (!spell.vocations.includes(ctx.vocation)) return { ok: false, reason: 'vocation' };
+  if (ctx.level < spell.minLevel) return { ok: false, reason: 'level', detail: String(spell.minLevel) };
+  if (ctx.magicLevel < spell.minMagicLevel)
+    return { ok: false, reason: 'magicLevel', detail: String(spell.minMagicLevel) };
+  if (ctx.cooldownRemaining > 0 || ctx.globalCooldownRemaining > 0) return { ok: false, reason: 'cooldown' };
+  if (ctx.mana < spellManaCost(spell, ctx.level)) return { ok: false, reason: 'noMana' };
+  if (spell.requiresWeapon && !ctx.unarmed && spell.requiresWeapon !== ctx.weaponKind)
+    return { ok: false, reason: 'weapon', detail: spell.requiresWeapon };
+  const offensive = spell.effect === 'damage';
+  if (offensive && ctx.inProtectionZone) return { ok: false, reason: 'protectionZone' };
+  if (spell.target === 'target' || spell.target === 'areaTarget') {
+    const t = ctx.target;
+    if (!t || !t.exists) return { ok: false, reason: 'noTarget' };
+    if (!t.alive || (offensive && !t.hostile)) return { ok: false, reason: 'invalidTarget' };
+    if (t.distance > spell.range) return { ok: false, reason: 'outOfRange' };
+    if (!t.lineOfSight) return { ok: false, reason: 'noLineOfSight' };
+  }
+  return { ok: true };
+}
+
+export function castFailMessage(reason: CastFailReason, detail?: string): string {
+  switch (reason) {
+    case 'dead':
+      return 'Você está morto.';
+    case 'vocation':
+      return 'Sua vocação não conhece esta magia.';
+    case 'level':
+      return `Requer nível ${detail}.`;
+    case 'magicLevel':
+      return `Requer Magic Level ${detail}.`;
+    case 'cooldown':
+      return 'Magia em recarga.';
+    case 'noMana':
+      return 'Mana insuficiente.';
+    case 'noTarget':
+      return 'Selecione um alvo primeiro.';
+    case 'invalidTarget':
+      return 'Alvo inválido.';
+    case 'outOfRange':
+      return 'Alvo fora de alcance.';
+    case 'noLineOfSight':
+      return 'Sem linha de visão até o alvo.';
+    case 'protectionZone':
+      return 'Ações ofensivas não são permitidas em área protegida.';
+    case 'weapon':
+      return detail === 'melee' ? 'Requer uma arma corpo a corpo.' : 'Requer uma arma de distância.';
+  }
+}
+
+/**
+ * Id atual de uma magia salva: os antigos graus II/III (`fire_nova_2`, `fire_nova_3`) viraram a magia base. Retorna o
+ * próprio id se ele existe, o da base se for um grau removido, ou null.
+ */
+export function currentSpellId(spells: Readonly<Record<string, SpellDef>>, id: string): string | null {
+  if (spells[id]) return id;
+  const m = /^(.+)_[23]$/.exec(id);
+  return m && spells[m[1]!] ? m[1]! : null;
+}
+
+/** Chave da recarga individual de uma magia. */
+export function spellCooldownKey(spell: SpellDef): string {
+  return `spell:${spell.id}`;
+}

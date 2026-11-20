@@ -1,0 +1,420 @@
+// Representação visual das criaturas. Lê o estado da simulação (posição interpolada, direção,
+// vida) a cada quadro — a renderização nunca é a fonte da verdade.
+import type Phaser from 'phaser';
+import { renderPos, isMoving } from '../movement/movement';
+import type { HeroEntity, MonsterEntity, Mover, NpcEntity, PlayerEntity } from '../entities/types';
+import type { World } from '../simulation/World';
+import { atWar, isWarEnemy, sameGuild, skullSeenBy } from '../social/social';
+import { DEPTH, ySort } from './depth';
+import { SHEETS } from '../../assets';
+import { worldText, snapWorld, cssToWorld, getWorldTextZoom, setWorldTextSize, worldTextScale } from './text';
+
+/** Barra de vida (pixels do mundo): mais larga (≈ largura do personagem), fina como antes. */
+const BAR_W = 20;
+const BAR_H = 2;
+
+const HUMANOID_ROWS = { down: 0, left: 1, right: 2, up: 3 } as const;
+
+/** Estilo do nome: o do jogador/herói é maior (é informação de combate); o de criatura é discreto. */
+export type NameKind = 'actor' | 'creature';
+
+/**
+ * Tamanho do nome na tela (px CSS). No desktop é o tamanho num tile de 64 px e cresce com o zoom (`worldTextScale`):
+ * antes era fixo (16 e 11 px) e ficava miúdo em monitores grandes. No celular é fixo e menor (a tela é pequena).
+ */
+const NAME_STYLE: Record<NameKind, { desktop: number; touch: number; weight: number }> = {
+  actor: { desktop: 18, touch: 11, weight: 800 },
+  creature: { desktop: 15, touch: 9, weight: 700 },
+};
+
+/** Tamanho do nome (px CSS) para o tipo de tela e o zoom atual da câmera. */
+export function nameSize(kind: NameKind, touch: boolean, zoom?: number, dpr?: number): number {
+  const s = NAME_STYLE[kind];
+  return touch ? s.touch : Math.round(s.desktop * worldTextScale(false, zoom, dpr));
+}
+
+export class CreatureView {
+  readonly container: Phaser.GameObjects.Container;
+  readonly sprite: Phaser.GameObjects.Sprite;
+  readonly shadow: Phaser.GameObjects.Image;
+  private bar: Phaser.GameObjects.Graphics | null = null;
+  private label: Phaser.GameObjects.Text | null = null;
+  private labelText = '';
+  private labelColor = '';
+  private labelKind: NameKind = 'creature';
+  private labelSize = 0;
+  /** Ícones à direita do nome (escudo de grupo, caveira de PK). */
+  private badges: Phaser.GameObjects.Image[] = [];
+  private badgeKey = '';
+  private layoutZoom = 0;
+  private lastHpKey = '';
+  private flashUntil = 0;
+  /** Deslocamento temporário (investida de ataque), em pixels. */
+  lunge = { x: 0, y: 0 };
+  dead = false;
+
+  constructor(
+    scene: Phaser.Scene,
+    readonly id: string,
+    readonly sheet: string,
+    readonly kind: 'humanoid' | 'blob' | 'quad',
+    shadow: 's' | 'm' | 'l',
+    readonly yOffset: number,
+    name?: string,
+    labelColor = '#fff09a',
+    nameKind: NameKind = 'creature',
+  ) {
+    this.shadow = scene.add.image(0, -2, 'objects', `shadow_${shadow}`);
+    this.sprite = scene.add.sprite(0, yOffset, sheet, 0).setOrigin(0.5, 1);
+    this.container = scene.add.container(0, 0, [this.shadow, this.sprite]);
+    this.scene = scene;
+    if (name) this.setName(name, labelColor, nameKind);
+  }
+
+  private readonly scene: Phaser.Scene;
+
+  /** Topo da "cabeça" (pixels do mundo, relativo ao pé): referência para a barra de vida e o nome. */
+  private get headTop(): number {
+    // 4 px abaixo do topo do quadro do sprite (metade do 8 original): perto da cabeça, sem ficar distante
+    return -this.sprite.displayHeight + this.yOffset + (this.kind === 'humanoid' ? 4 : 2);
+  }
+
+  /** Nome sempre visível acima da barra de vida (na fonte da interface). */
+  setName(text: string, color: string, nameKind: NameKind = this.labelKind): void {
+    if (text === this.labelText && color === this.labelColor && this.label && nameKind === this.labelKind) return;
+    const kindChanged = nameKind !== this.labelKind;
+    this.labelText = text;
+    this.labelColor = color;
+    this.labelKind = nameKind;
+    const weight = NAME_STYLE[nameKind].weight;
+    if (!this.label) {
+      this.labelSize = nameSize(nameKind, this.touch);
+      this.label = worldText(this.scene, 0, 0, text, { size: this.labelSize, color, weight });
+      this.label.setOrigin(0.5, 1);
+      this.container.add(this.label);
+    } else {
+      this.label.setText(text).setColor(color);
+      if (kindChanged) this.label.setFontStyle(String(weight));
+    }
+    this.layoutLabel();
+  }
+
+  private get touch(): boolean {
+    return !!this.scene.registry.get('touch');
+  }
+
+  /** Ícones à direita do nome (ex.: ['ui_shield_member', 'ui_skull_white']); vazio remove. */
+  setBadges(frames: readonly string[]): void {
+    const key = frames.join('|');
+    if (key === this.badgeKey) return;
+    this.badgeKey = key;
+    for (const b of this.badges) b.destroy();
+    this.badges = frames.map((f) => {
+      const img = this.scene.add.image(0, 0, 'icons', f);
+      this.container.add(img);
+      return img;
+    });
+    this.layoutLabel();
+  }
+
+  /**
+   * O nome fica centralizado acima da barra de vida e os ícones (escudo de grupo e caveira) logo à direita dele, na
+   * mesma altura e do tamanho da letra. Antes os ícones ficavam abaixo da barra, sobre a cabeça do personagem, e eram
+   * confundidos com parte do desenho. Nome e ícones mudam de tamanho com o zoom (no desktop).
+   */
+  private layoutLabel(): void {
+    if (!this.label) return;
+    this.layoutZoom = getWorldTextZoom();
+    const size = nameSize(this.labelKind, this.touch);
+    if (size !== this.labelSize) {
+      this.labelSize = size;
+      setWorldTextSize(this.label, size);
+    }
+    const barTop = this.headTop - 3; // topo da barra (ver setHealthBar)
+    const bottom = barTop - 2;
+    this.label.setPosition(0, bottom);
+    if (!this.badges.length) return;
+    // centro dos ícones na altura do meio das maiúsculas: linha de base (fundo − descendente − meia borda) − 0,36 em
+    const k = this.label.scaleY; // pixel do canvas do texto → pixel do mundo
+    const baseline = bottom - (this.label.getTextMetrics().descent + this.label.style.strokeThickness / 2) * k;
+    const cy = snapWorld(baseline - cssToWorld(size * 0.36));
+    const icon = cssToWorld(Math.max(12, Math.round(size * 1.05)));
+    const gap = cssToWorld(2);
+    const x0 = this.label.displayWidth / 2 + gap;
+    this.badges.forEach((b, i) => {
+      b.setDisplaySize(icon, icon).setPosition(snapWorld(x0 + i * (icon + gap) + icon / 2), cy);
+    });
+  }
+
+  get height(): number {
+    return this.sprite.height;
+  }
+
+  /** Topo do nome (ou da barra de vida, sem nome), relativo ao pé: o balão de fala fica acima dele. */
+  get labelTop(): number {
+    const bottom = this.headTop - 5;
+    return this.label?.visible ? bottom - this.label.displayHeight : bottom;
+  }
+
+  setLabelVisible(v: boolean): void {
+    this.label?.setVisible(v);
+    for (const b of this.badges) b.setVisible(v);
+  }
+
+  flash(now: number): void {
+    this.flashUntil = now + 90;
+  }
+
+  /** Barra de vida compacta acima da cabeça (redesenhada só quando muda). */
+  setHealthBar(pct: number | null, scene: Phaser.Scene = this.scene, color = 0x4fd08a): void {
+    const c = pct !== null && pct <= 0.3 ? 0xe04a44 : pct !== null && pct <= 0.6 ? 0xf8dc6c : color;
+    const key = pct === null ? 'none' : `${Math.round(pct * BAR_W)}:${c}`;
+    if (key === this.lastHpKey && (pct === null || this.bar?.visible)) return;
+    this.lastHpKey = key;
+    if (pct === null) {
+      this.bar?.setVisible(false);
+      return;
+    }
+    if (!this.bar) {
+      this.bar = scene.add.graphics();
+      this.container.add(this.bar);
+    }
+    const g = this.bar.setVisible(true).clear();
+    const w = BAR_W;
+    const top = this.headTop - 3;
+    g.fillStyle(0x120d18, 1).fillRect(-w / 2 - 1, top - 1, w + 2, BAR_H + 2);
+    const fill = Math.max(1, Math.round(w * pct));
+    g.fillStyle(c, 1).fillRect(-w / 2, top, fill, BAR_H);
+  }
+
+  sync(m: Mover, now: number, animate: boolean, speed: number): void {
+    const p = renderPos(m, now);
+    // Encaixa na grade de pixels da tela: sem isso o desenho "pula" meio pixel a cada quadro
+    // (a interpolação é fracionária) e o nome do personagem treme enquanto o personagem anda.
+    const x = snapWorld(p.x * 16 + 8 + this.lunge.x);
+    const y = snapWorld((p.y + 1) * 16 - 1 + this.lunge.y);
+    this.container.setPosition(x, y);
+    this.container.setDepth(ySort(p.y, 0.5));
+    if (this.layoutZoom !== getWorldTextZoom()) this.layoutLabel(); // zoom mudou: reposiciona os ícones do nome
+    if (this.dead) return;
+    const moving = animate && isMoving(m, now);
+    if (this.kind === 'humanoid') {
+      const key = `${this.sheet}_walk_${m.facing}`;
+      if (moving) {
+        if (this.sprite.anims.currentAnim?.key !== key || !this.sprite.anims.isPlaying) this.sprite.play(key, true);
+        this.sprite.anims.timeScale = speed / 4;
+      } else {
+        this.sprite.anims.stop();
+        this.sprite.setFrame(HUMANOID_ROWS[m.facing] * 3);
+      }
+    } else if (this.kind === 'blob') {
+      if (!this.sprite.anims.isPlaying) this.sprite.play(`${this.sheet}_idle`);
+      this.sprite.anims.timeScale = moving ? 1.8 : 1;
+    } else {
+      if (m.facing === 'left') this.sprite.setFlipX(true);
+      else if (m.facing === 'right') this.sprite.setFlipX(false);
+      if (moving) {
+        if (!this.sprite.anims.isPlaying) this.sprite.play(`${this.sheet}_walk`);
+      } else {
+        this.sprite.anims.stop();
+        this.sprite.setFrame(0);
+      }
+    }
+    if (now < this.flashUntil) this.sprite.setTintFill(0xffffff);
+    else this.sprite.clearTint();
+  }
+
+  showDead(): void {
+    this.dead = true;
+    this.sprite.anims.stop();
+    const frames = this.sprite.texture.frameTotal - 1; // inclui __BASE
+    this.sprite.setFrame(frames - 1);
+    this.setHealthBar(null);
+    this.label?.setVisible(false);
+  }
+
+  revive(): void {
+    this.dead = false;
+    this.lastHpKey = '';
+    this.sprite.setAlpha(1);
+    this.container.setAlpha(1);
+  }
+
+  destroy(): void {
+    this.container.destroy();
+  }
+}
+
+export class EntityViews {
+  readonly player: CreatureView;
+  readonly monsters = new Map<string, CreatureView>();
+  readonly npcs = new Map<string, CreatureView>();
+  /** Heróis (personagens-jogadores com vida própria): nome em verde para diferenciar dos NPCs. */
+  readonly heroes = new Map<string, CreatureView>();
+
+  constructor(
+    private readonly scene: Phaser.Scene,
+    private readonly world: World,
+  ) {
+    // os ícones ao lado do nome (escudo, caveira) são reduzidos com filtro suave, como o texto (0 = LINEAR)
+    scene.textures.get('icons').setFilter(0);
+    const p = world.player;
+    this.player = new CreatureView(scene, p.id, p.character.vocation, 'humanoid', 's', 1);
+    // as criaturas ganham desenho, nome e barra só quando aparecem na tela pela primeira vez (ver sync): são mais de mil
+    // no mundo, e criar todas na largada custava tempo de carga e memória (cada nome é uma textura)
+    for (const n of world.npcs.values()) this.addNpc(n);
+  }
+
+  addMonster(m: MonsterEntity): CreatureView {
+    const kind = SHEETS.find((s) => s.key === m.def.sprite)?.kind ?? 'humanoid';
+    const v = new CreatureView(this.scene, m.id, m.def.sprite, kind, m.def.shadow, kind === 'quad' ? 3 : kind === 'blob' ? 2 : 1);
+    if (m.def.scale) {
+      v.sprite.setScale(m.def.scale);
+      v.shadow.setScale(m.def.scale);
+    }
+    v.setName(m.def.name, '#f3d6c8');
+    this.monsters.set(m.id, v);
+    return v;
+  }
+
+  private addNpc(n: NpcEntity): void {
+    const v = new CreatureView(this.scene, n.id, n.def.sprite, 'humanoid', 's', 1, n.def.name, '#fff09a');
+    this.npcs.set(n.id, v);
+  }
+
+  /** Nome do personagem com marcas de grupo (★ líder) e caveira (PK). */
+  /** Nome + ícones ao lado dele: escudo de grupo (líder amarelo, membro azul) e caveira de PK (branca, amarela, vermelha). */
+  private actorPlate(a: PlayerEntity, base: string): { text: string; color: string; badges: string[] } {
+    const w = this.world;
+    const party = w.social.party;
+    const inParty = !!party && party.members.includes(a.id) && party.members.includes(w.human.id);
+    const badges: string[] = [];
+    if (inParty) badges.push(party!.leaderId === a.id ? 'ui_shield_leader' : 'ui_shield_member');
+    // a caveira como o jogador a vê (inclui a amarela de vingança de quem o matou injustamente)
+    const skull = skullSeenBy(w, w.human.id, a.id);
+    if (skull) badges.push(`ui_skull_${skull}`);
+    // marcado no botão de seleção: nome em laranja (o ataque vai nele)
+    // guerra: inimigo em vermelho, a própria guilda em verde (o grupo continua azul)
+    const war =
+      atWar(w) && a.id !== w.human.id
+        ? isWarEnemy(w, w.human.id, a.id)
+          ? '#ff6b6b'
+          : sameGuild(w, w.human.id, a.id)
+            ? '#9fe870'
+            : null
+        : null;
+    const color =
+      w.ui.selectedActor === a.id ? '#ffb347' : inParty && a.id !== w.human.id ? '#7fd8ff' : (war ?? base);
+    return { text: a.character.name, color, badges };
+  }
+
+  get(id: string): CreatureView | undefined {
+    return id === this.player.id ? this.player : (this.monsters.get(id) ?? this.npcs.get(id) ?? this.heroes.get(id));
+  }
+
+  private addHero(h: HeroEntity): CreatureView {
+    const v = new CreatureView(this.scene, h.id, h.character.vocation, 'humanoid', 's', 1, h.character.name, '#8ff0b0', 'actor');
+    this.heroes.set(h.id, v);
+    return v;
+  }
+
+  /** Posição de tela (pixels do mundo) do topo da cabeça de uma entidade. */
+  headOf(id: string): { x: number; y: number } | null {
+    const v = this.get(id);
+    if (!v) return null;
+    return { x: v.container.x, y: v.container.y - v.height + 8 };
+  }
+
+  sync(now: number, targetId: string | null, view?: { x: number; y: number; right: number; bottom: number }): void {
+    const w = this.world;
+    const p: PlayerEntity = w.player;
+    this.player.sync(p, now, true, p.stats.speed);
+    // só desenha (sprite, nome e barra) quem está na área visível: poupa muito em aparelhos fracos
+    const M = 40;
+    const visible = (e: { x: number; y: number }) => !view || (e.x * 16 + 8 >= view.x - M && e.x * 16 + 8 <= view.right + M && e.y * 16 >= view.y - M && e.y * 16 <= view.bottom + M);
+    for (const m of w.monsters.values()) {
+      let v = this.monsters.get(m.id);
+      if (!m.alive || !visible(m)) {
+        v?.container.setVisible(false);
+        continue;
+      }
+      if (!v) v = this.addMonster(m);
+      if (!v.container.visible || v.dead) {
+        v.revive();
+        v.container.setVisible(true);
+      }
+      v.sync(m, now, true, m.def.speed);
+      v.setLabelVisible(true);
+      v.setHealthBar(m.hp / m.def.health, this.scene, m.id === targetId ? 0xff6a5a : 0x4fd08a);
+    }
+    for (const n of w.npcs.values()) {
+      const v = this.npcs.get(n.id)!;
+      v.container.setVisible(visible(n));
+      if (!v.container.visible) continue;
+      v.sync(n, now, true, 1.6);
+      v.setLabelVisible(true);
+    }
+    // quem deslogou some da tela
+    for (const [id, v] of this.heroes)
+      if (!w.heroes.has(id)) {
+        v.destroy();
+        this.heroes.delete(id);
+      }
+    for (const h of w.heroes.values()) {
+      const v = this.heroes.get(h.id) ?? this.addHero(h);
+      v.container.setVisible(visible(h));
+      if (!v.container.visible) continue;
+      v.sync(h, now, true, h.stats.speed);
+      const plate = this.actorPlate(h, '#8ff0b0');
+      v.setName(plate.text, plate.color, 'actor');
+      v.setBadges(plate.badges);
+      v.setLabelVisible(!h.dead);
+      v.setHealthBar(h.dead ? null : h.character.health / h.stats.maxHealth, this.scene, h.id === targetId ? 0xff6a5a : 0x4fd08a);
+    }
+    const plate = this.actorPlate(p, '#fbf8ef');
+    this.player.setName(plate.text, plate.color, 'actor');
+    this.player.setBadges(plate.badges);
+    this.player.setLabelVisible(!p.dead);
+    this.player.setHealthBar(p.dead ? null : p.character.health / p.stats.maxHealth, this.scene, 0x4fd08a);
+  }
+
+  /** Centro do desenho de uma entidade no mundo (para testes e para apontar coisas na tela). */
+  centerOf(id: string): { x: number; y: number } | null {
+    const v = this.monsters.get(id) ?? this.npcs.get(id) ?? this.heroes.get(id);
+    if (!v || !v.container.visible) return null;
+    return { x: v.container.x, y: v.container.y - v.height / 2 };
+  }
+
+  /** Entidade sob um ponto do mundo (para toque/clique). */
+  pick(wx: number, wy: number): string | null {
+    let best: string | null = null;
+    let bestD = Infinity;
+    // a área de toque inclui o nome e a barra de vida acima da cabeça (onde o jogador costuma tocar)
+    const test = (id: string, v: CreatureView, pad: number, weight: number, half = 13) => {
+      if (!v.container.visible || v.dead) return;
+      const cx = v.container.x;
+      const top = v.container.y - v.height - pad;
+      const bottom = v.container.y + 4;
+      if (wx < cx - half || wx > cx + half || wy < top || wy > bottom) return;
+      const d = Math.hypot(wx - cx, wy - (v.container.y - v.height / 2)) * weight;
+      if (d < bestD) {
+        bestD = d;
+        best = id;
+      }
+    };
+    for (const [id, v] of this.monsters) test(id, v, 4, 1);
+    for (const [id, v] of this.npcs) test(id, v, 12, 1);
+    // personagens com vida própria têm prioridade (andam bastante e ficam no meio dos monstros)
+    for (const [id, v] of this.heroes) test(id, v, 16, 0.6, 15);
+    return best;
+  }
+
+  destroy(): void {
+    this.player.destroy();
+    for (const v of this.monsters.values()) v.destroy();
+    for (const v of this.npcs.values()) v.destroy();
+    for (const v of this.heroes.values()) v.destroy();
+  }
+}
+
+export { DEPTH };

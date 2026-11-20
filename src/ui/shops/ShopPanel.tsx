@@ -1,0 +1,195 @@
+// Loja: comprar e vender com preços configuráveis, quantidade, comparação e feedback de ouro.
+import { useState } from 'react';
+import { useSession, useSnap } from '../../integration/game-ui-bridge/hooks';
+import type { ItemView } from '../../integration/game-ui-bridge/snapshot';
+import { ItemIcon, Panel, PixelButton } from '../common/primitives';
+import { ItemDetails, statDiff } from '../inventory/InventoryPanel';
+import { DiffParts, ItemStats } from '../inventory/ItemCell';
+import { MARKET_CATEGORIES, type MarketCategoryId } from '../../domain/rules/marketCatalog';
+
+type CategoryFilter = 'all' | MarketCategoryId | 'other';
+const CATEGORY_NAME = Object.fromEntries(MARKET_CATEGORIES.map((c) => [c.id, c.name])) as Record<MarketCategoryId, string>;
+const CATEGORY_ORDER = MARKET_CATEGORIES.map((c) => c.id as CategoryFilter).concat('other');
+const catOf = (item: ItemView): CategoryFilter => item.category ?? 'other';
+/** Dá para usar agora (equipar ou beber/usar): vocação e nível em dia. */
+const usableNow = (item: ItemView) => !item.blockedReason && (item.equipable || item.usable);
+
+/** Diferença de atributos do item da loja em relação ao que está equipado (ex.: "+1 def"). */
+function ShopDiff({ item, equipped }: { item: ItemView; equipped: ItemView | null }) {
+  const diff = statDiff(item, equipped);
+  if (!diff) return null;
+  return (
+    <span className="text-outline text-[11px] leading-none" data-testid="shop-diff">
+      <DiffParts diff={diff} />
+    </span>
+  );
+}
+
+export function ShopPanel() {
+  const session = useSession();
+  const shop = useSnap((s) => s.shop);
+  const gold = useSnap((s) => s.player.gold);
+  const bank = useSnap((s) => s.shop?.bankGold ?? 0);
+  const eq = useSnap((s) => s.equipment);
+  const [tab, setTab] = useState<'buy' | 'sell'>('buy');
+  const [selId, setSelId] = useState<string | null>(null);
+  const [qty, setQty] = useState(1);
+  const [cat, setCat] = useState<CategoryFilter>('all');
+  const [mineOnly, setMineOnly] = useState(false);
+  if (!shop) return null;
+  const all = tab === 'buy' ? shop.sells.map((o) => ({ item: o.item, price: o.price, extra: o.canAfford ? '' : 'caro', owned: 0, market: o.market })) : shop.buys
+          .map((o) => ({ item: o.item, price: o.price, extra: '', owned: o.owned, market: null }))
+          // o que você tem para vender aparece primeiro (maior valor total no topo)
+          .sort((a, b) => Number(b.owned > 0) - Number(a.owned > 0) || b.owned * b.price - a.owned * a.price);
+  // categorias que esta loja tem (na ordem do mercado), para os filtros
+  const present = CATEGORY_ORDER.filter((c) => all.some((o) => catOf(o.item) === c));
+  const activeCat = cat !== 'all' && present.includes(cat) ? cat : 'all';
+  const list = all
+    .filter((o) => (activeCat === 'all' || catOf(o.item) === activeCat) && (tab !== 'buy' || !mineOnly || usableNow(o.item)))
+    // comprar: o que você já pode usar primeiro, depois pelo nível (do menor para o maior) e pelo preço
+    .sort((a, b) => (tab === 'buy' ? Number(usableNow(b.item)) - Number(usableNow(a.item)) || a.item.minLevel - b.item.minLevel || a.price - b.price : 0));
+  // itens travados (cadeado) não entram no "vender tudo"
+  const sellAllTotal = shop.buys.reduce((s, o) => s + (o.item.kept ? 0 : o.owned * o.price), 0);
+  const sellAllUnits = shop.buys.reduce((s, o) => s + (o.item.kept ? 0 : o.owned), 0);
+  const sel = list.find((o) => o.item.itemId === selId) ?? null;
+  const maxQty = sel ? (tab === 'buy' ? Math.max(1, Math.min(100, Math.floor((gold + bank) / Math.max(1, sel.price)))) : Math.max(1, sel.owned)) : 1;
+  const q = Math.min(qty, maxQty);
+  return (
+    <Panel title={shop.name} onClose={() => session.closeShop()} icon="ui_coin" wide scroll={false} fill>
+      <div className="mb-2 flex shrink-0 items-center gap-2">
+        <PixelButton variant={tab === 'buy' ? 'gold' : 'stone'} onClick={() => (setTab('buy'), setSelId(null), setQty(1))}>
+          Comprar
+        </PixelButton>
+        <PixelButton variant={tab === 'sell' ? 'gold' : 'stone'} onClick={() => (setTab('sell'), setSelId(null), setQty(1))}>
+          Vender
+        </PixelButton>
+        {tab === 'sell' && (
+          <PixelButton
+            variant="gold"
+            className="px-1 text-[12px]"
+            disabled={sellAllUnits === 0}
+            title="Vende tudo da mochila que esta loja compra (itens equipados não entram)"
+            onClick={() => {
+              if (window.confirm(`Vender ${sellAllUnits} ${sellAllUnits === 1 ? 'item' : 'itens'} da mochila por ${sellAllTotal} de ouro?`)) session.sellAll();
+            }}
+          >
+            Vender tudo ({sellAllTotal})
+          </PixelButton>
+        )}
+        <span className="ml-auto flex items-center gap-2 text-gold-light" data-testid="shop-gold" title="A compra gasta o ouro da mochila primeiro e completa com o do banco">
+          <span className="flex items-center gap-1" data-testid="shop-gold-bag">
+            <ItemIcon icon="ui_coin" size={16} /> {gold}
+          </span>
+          <span className="text-[11px] text-muted" data-testid="shop-gold-bank">
+            banco {bank}
+          </span>
+        </span>
+      </div>
+      {/* filtros: categoria (as que a loja tem) e, na compra, só o que dá para usar agora */}
+      <div className="mb-2 flex shrink-0 gap-1 overflow-x-auto pb-1" data-testid="shop-filters">
+        {tab === 'buy' && (
+          <button
+            type="button"
+            onClick={() => (setMineOnly(!mineOnly), setSelId(null))}
+            aria-pressed={mineOnly}
+            className={`shrink-0 rounded-sm border-2 px-2 py-[2px] text-[11px] ${mineOnly ? 'border-heal bg-[#123a24] text-heal' : 'border-[#4a3a2a] text-muted'}`}
+            data-testid="shop-mine"
+            title="Mostra só o que a sua vocação e o seu nível já podem usar"
+          >
+            {mineOnly ? '✓ ' : ''}Posso usar
+          </button>
+        )}
+        {(['all', ...present] as CategoryFilter[]).map((c) => (
+          <button
+            key={c}
+            type="button"
+            onClick={() => (setCat(c), setSelId(null))}
+            aria-pressed={activeCat === c}
+            className={`shrink-0 rounded-sm border-2 px-2 py-[2px] text-[11px] ${activeCat === c ? 'border-gold bg-[#3a2a12] text-gold-light' : 'border-[#4a3a2a] text-muted'}`}
+            data-testid={`shop-cat-${c}`}
+          >
+            {c === 'all' ? 'Todos' : c === 'other' ? 'Diversos' : CATEGORY_NAME[c]}
+          </button>
+        ))}
+      </div>
+      {/* corpo: lista (rola) + coluna de detalhes (rola) com a barra de compra sempre visível embaixo */}
+      <div className="flex min-h-0 flex-1 flex-col gap-2 sm:flex-row">
+        <div className="flex min-h-[96px] flex-1 flex-col gap-1 overflow-y-auto overscroll-contain pr-1 sm:min-h-0" data-testid="shop-list">
+          {list.map((o) => (
+            <button
+              type="button"
+              key={o.item.itemId}
+              onClick={() => (setSelId(o.item.itemId), setQty(1))}
+              className={`frame-slot flex shrink-0 items-center gap-2 !border-[6px] px-1 text-left ${selId === o.item.itemId ? 'outline-2 outline-gold-light' : ''} ${tab === 'sell' && o.owned === 0 ? 'opacity-50' : ''}`}
+              data-testid={`shop-item-${o.item.itemId}`}
+            >
+              <ItemIcon icon={o.item.icon} size={32} />
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-2">
+                  {o.item.kept && <ItemIcon icon="ui_lock" size={12} title="Venda travada" />}
+                  <span className="min-w-0 truncate text-[13px]">{o.item.name}</span>
+                  <ItemStats item={o.item} size="md" />
+                  {o.item.slot && <ShopDiff item={o.item} equipped={eq[o.item.slot]} />}
+                </span>
+                <span className={`block text-[11px] ${tab === 'buy' && o.extra ? 'text-hp-light' : 'text-gold-light'}`}>
+                  {o.price} ouro{tab === 'sell' ? ` · você tem ${o.owned}` : ''}
+                  {tab === 'buy' && o.item.minLevel > 1 && <span className={o.item.blockedReason ? 'text-hp-light' : 'text-muted'}> · nv {o.item.minLevel}</span>}
+                  {tab === 'buy' && o.market && <span className="text-heal"> · mercado {o.market.price}</span>}
+                </span>
+              </span>
+              {o.item.blockedReason && tab === 'buy' && (
+                <span className="text-[10px] text-hp-light" title={o.item.blockedReason}>
+                  !
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+        <div className="flex min-h-0 shrink-0 flex-col gap-2 sm:w-[300px] sm:shrink">
+          <div className="max-h-[30dvh] min-h-0 overflow-y-auto overscroll-contain sm:max-h-none sm:flex-1">
+            {sel ? (
+              <ItemDetails item={sel.item} equipped={sel.item.slot ? eq[sel.item.slot] : undefined} />
+            ) : (
+              <p className="frame-tooltip text-[12px] text-muted">{tab === 'buy' ? 'Escolha um item para ver atributos, comparar com o equipado e comprar.' : 'Escolha um item da lista para vender. Itens equipados não podem ser vendidos.'}</p>
+            )}
+          </div>
+          {sel && (
+            <div className="frame-slot flex shrink-0 flex-wrap items-center gap-2 !border-[6px] p-1" data-testid="shop-actions">
+              <PixelButton className="h-9 w-9 !border-[6px]" onClick={() => setQty(Math.max(1, q - 1))} ariaLabel="Diminuir quantidade">
+                −
+              </PixelButton>
+              <span className="w-8 text-center" data-testid="shop-qty">
+                {q}
+              </span>
+              <PixelButton className="h-9 w-9 !border-[6px]" onClick={() => setQty(Math.min(maxQty, q + 1))} ariaLabel="Aumentar quantidade">
+                +
+              </PixelButton>
+              <PixelButton className="h-9 !border-[6px] px-1 text-[11px]" onClick={() => setQty(maxQty)}>
+                Máx
+              </PixelButton>
+              <PixelButton
+                variant="gold"
+                className="min-w-[140px] flex-1 px-1"
+                disabled={tab === 'sell' && sel.owned === 0}
+                onClick={() => (tab === 'buy' ? session.buy(sel.item.itemId, q) : session.sell(sel.item.itemId, q))}
+              >
+                {tab === 'buy' ? `Comprar por ${sel.price * q}` : `Vender por ${sel.price * q}`}
+              </PixelButton>
+              {/* anunciado mais barato no mercado: compra de lá sem sair da loja (só aparece quando compensa) */}
+              {tab === 'buy' && sel.market && (
+                <PixelButton
+                  className="w-full !border-[6px] px-1 text-[12px]"
+                  title={`${sel.market.units} à venda no mercado abaixo do preço da loja`}
+                  onClick={() => session.marketBuyAtShop(sel.item.itemId, Math.min(q, sel.market!.units))}
+                  data-testid="shop-market-buy"
+                >
+                  Comprar {Math.min(q, sel.market.units)} no mercado · a partir de {sel.market.price} cada (loja: {sel.price})
+                </PixelButton>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </Panel>
+  );
+}

@@ -1,0 +1,42 @@
+// Equipamentos do nível 24 ao 100 e poções de alto nível à venda em Pedraluz (única cidade). As peças de luta vão
+// para a Ferraria e as de mago para a Alquimia; as lojas também compram os troféus das criaturas pelo valor cheio.
+import type { ShopDef } from '../domain/entities/definitions';
+import { GEAR_ITEMS } from './items.gear';
+import { MANA_POTION_PRICE } from './pricing';
+import { TROPHY_ITEMS as LATE_TROPHIES } from './monsters.late';
+import { SOUTH_TROPHY_ITEMS } from './monsters.south';
+
+/** Quanto a loja paga por uma poção (fração do preço de venda): baixo, para criar poções e vender não virar fábrica de ouro. */
+export const POTION_BUYBACK = 0.35;
+export const potionBuyback = (price: number): number => Math.floor((price * Math.round(POTION_BUYBACK * 100)) / 100);
+
+/** Troféus que a Alquimia e a Banca compram pelo valor cheio (faixas tardias e terras do sul). */
+const TROPHY_ITEMS = [...LATE_TROPHIES, ...SOUTH_TROPHY_ITEMS];
+
+const sellPct = (price: number) => Math.max(1, Math.round(price * 0.35));
+const MAGE_KINDS = ['wand_', 'rod_', 'spellbook_', 'robe_', 'hat_', 'legs_mage_', 'ring_wisdom_', 'amulet_mage_'];
+const isMageGear = (id: string) => MAGE_KINDS.some((k) => id.startsWith(k));
+
+const fighter = GEAR_ITEMS.filter((i) => !!i.slot && !isMageGear(i.id));
+const mage = GEAR_ITEMS.filter((i) => !!i.slot && isMageGear(i.id));
+// poção de mana com o desconto de nov/2026 (ver pricing.ts)
+const POTIONS: [string, number][] = [['potion_health_spirit', 340], ['potion_health_divine', 560], ['potion_mana_spirit', MANA_POTION_PRICE.potion_mana_spirit!], ['potion_mana_divine', MANA_POTION_PRICE.potion_mana_divine!]];
+
+/** Acrescenta as faixas tardias às lojas de Pedraluz. */
+export function withLateStock(shops: ShopDef[]): ShopDef[] {
+  return shops.map((s) => {
+    if (s.id === 'equipment') return { ...s, sells: [...s.sells, ...fighter.map((i) => ({ itemId: i.id, price: i.value }))], buys: [...s.buys, ...GEAR_ITEMS.map((i) => ({ itemId: i.id, price: sellPct(i.value) }))] };
+    if (s.id === 'potions')
+      return { ...s, sells: [...s.sells, ...mage.map((i) => ({ itemId: i.id, price: i.value })), ...POTIONS.map(([itemId, price]) => ({ itemId, price }))], buys: [...s.buys, ...TROPHY_ITEMS.map((i) => ({ itemId: i.id, price: i.value })), ...POTIONS.map(([itemId, price]) => ({ itemId, price: potionBuyback(price) }))] };
+    if (s.id === 'general') return { ...s, buys: [...s.buys, ...TROPHY_ITEMS.map((i) => ({ itemId: i.id, price: i.value }))] };
+    return s;
+  }).map((s, _i, all) => {
+    // todas as poções existentes à venda em quem vende poção (Alquimia e Banca do Ilário), listadas primeiro
+    const alch = all.find((x) => x.id === 'potions');
+    if (!alch || !s.sells.some((o) => o.itemId.startsWith('potion_'))) return s;
+    const potions = alch.sells.filter((o) => o.itemId.startsWith('potion_')).sort((a, b) => a.price - b.price);
+    const rest = s.sells.filter((o) => !o.itemId.startsWith('potion_'));
+    const own = new Map(s.sells.filter((o) => o.itemId.startsWith('potion_')).map((o) => [o.itemId, o.price]));
+    return { ...s, sells: [...potions.map((o) => ({ itemId: o.itemId, price: own.get(o.itemId) ?? o.price })), ...rest] };
+  });
+}

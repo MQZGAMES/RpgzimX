@@ -1,0 +1,1124 @@
+import type { SellLockTarget } from '../../domain/rules/economy';
+// Orquestrador da simulação. Recebe comandos de entrada (de qualquer fonte: teclado, toque, testes,
+// futuramente rede), avança o mundo com passos de tempo limitados e publica eventos tipados.
+import type { CharacterState } from '../../domain/entities/character';
+import type { EquipSlot } from '../../domain/entities/definitions';
+import type { GameData } from '../../domain/entities/gameData';
+import { EventBus } from '../../domain/events/EventBus';
+import type { GameEventMap } from '../../domain/events/gameEvents';
+import { vectorToDir, type DirVector } from '../../domain/value-objects/direction';
+import { PLAYER_ID } from '../../domain/value-objects/ids';
+import { createRng, type Rng } from '../../domain/value-objects/rng';
+import { createLootGenerator, type LootGenerator } from '../../domain/rules/loot';
+import { computeStats } from '../../domain/rules/stats';
+import { newShieldTraining } from '../../domain/rules/shielding';
+import { chebyshev } from '../../domain/value-objects/position';
+import { isPz, isSolid } from '../world/GameMap';
+import type { GameMap } from '../world/GameMap';
+import type { HeroDef } from '../../domain/entities/definitions';
+import type { HeroEntity, NpcEntity, PlayerEntity } from '../entities/types';
+import {
+  canEnter,
+  isMoving,
+  occupant,
+  pathTo,
+  placeOccupant,
+  removeOccupant,
+  settle,
+  teleport,
+  tryStep,
+} from '../movement/movement';
+import {
+  currentActorTarget,
+  currentTarget,
+  cycleTarget,
+  cycleActorSelection,
+  respawnPlayer,
+  setTarget,
+  updatePlayerCombat,
+  weaponCanReach,
+} from '../combat/combat';
+import { castSpell, updateQueuedSpell } from '../abilities/spells';
+import { bankGold, depotDeposit, depotDepositAll, depotWithdraw } from '../economy/depotService';
+import { createMonster, findSpawnCell, updateMonster } from '../ai/monsterAi';
+import {
+  chooseDialogOption,
+  interactNearest,
+  interactWith,
+  updateDoors,
+  updateNpcs,
+  updatePendingInteraction,
+  updateRegion,
+  updateUiDistance,
+} from '../interaction/interaction';
+import {
+  dropItem,
+  equipItem,
+  takeAllNearbyLoot,
+  takeLoot,
+  takeNearbyGold,
+  unequipSlot,
+  useInventoryItem,
+  useItemById,
+} from '../inventory/inventoryService';
+import { buyItem, sellItem, sellAllItems } from '../economy/shopService';
+import { refreshStats } from '../progression/progression';
+import { nearestReachable, planWalk } from '../movement/walk';
+import { setSellLock } from '../../domain/rules/economy';
+import { manaPerTick } from '../../domain/rules/regen';
+import {
+  HOTBAR_SETS,
+  HOTBAR_SIZE,
+  assignHotbar,
+  normalizeHotbar,
+  normalizeHotbarSets,
+  switchHotbarSet,
+  type HotbarEntry,
+} from '../../domain/rules/hotbar';
+import {
+  PARTY_FAIL_MESSAGE,
+  acceptInvite,
+  actorName,
+  partyOf,
+  actorById,
+  configureParty,
+  declineInvite,
+  disbandParty,
+  formationSpot,
+  invite,
+  kickFromParty,
+  leaveParty,
+  loadPk,
+  newSocialState,
+  passLeadership,
+  savePk,
+  updateSocial,
+  type PartySetting,
+  GUILD_NAMES,
+  atWar,
+  canAttackActor,
+  ensureGuild,
+  guildOf,
+  setWarMode,
+  type WarMode,
+  type WorldPvpMode,
+} from '../social/social';
+import { addHero, heroSnapshot } from '../ai/heroes';
+import { updateCityGuards } from '../world/guards';
+import { emptyMarket, type MarketState } from '../../domain/rules/market';
+import {
+  marketBuyNow,
+  marketShopTrade,
+  marketBuyAtShop,
+  marketCancel,
+  marketCollect,
+  marketOffer,
+  marketSellAll,
+  marketSellNow,
+  marketTakeParcels,
+} from '../economy/marketService';
+import type { OfferSide } from '../../domain/rules/market';
+import { actorSpeed, chaseStep, followCatchUp, trailStep } from '../movement/follow';
+import { DEFAULT_AUTO, updateAutoPlay, type AutoSettings } from '../ai/autoPlay';
+import {
+  answerInviteNow,
+  heroWarChanged,
+  heroFollowTick,
+  heroStatusLine,
+  orderHero,
+  profileOf,
+  reactNearby,
+  summonHero,
+  updateHeroBrain,
+} from '../ai/heroBrain';
+import { allActors, asActor, message, warnThrottled, type UiState, type World } from './World';
+
+export const MAX_STEP_MS = 50;
+export const MAX_FRAME_MS = 250;
+
+export interface SimulationOptions {
+  data: GameData;
+  map: GameMap;
+  character: CharacterState;
+  rng?: Rng;
+  loot?: LootGenerator;
+  /** Restaura a posição salva (se válida); caso contrário usa o ponto de nascimento. */
+  restorePosition?: boolean;
+  /** Relógio das regras de PK (caveira, PZ lock): no jogo, `Date.now` — conta o tempo real mesmo com o jogo pausado/fechado. */
+  clock?: () => number;
+  /** Heróis com vida própria presentes no mundo (personagens não controlados pelo jogador). */
+  heroes?: { hero: HeroDef; character: CharacterState }[];
+  /** Mercado salvo (anúncios e vendas a receber). */
+  market?: MarketState;
+  /** Jogo de verdade: heróis com sessões (saem para uma pausa e voltam) e AFK de vez em quando. */
+  lifelike?: boolean;
+}
+
+/** Depois de atacar, quem segue o líder fica caçando em paz por este tempo antes de voltar a segui-lo. */
+const FOLLOW_COMBAT_PAUSE_MS = 6000;
+
+export class GameSimulation {
+  readonly world: World;
+  private paused = false;
+  private joystickVector: { x: number; y: number } | null = null;
+
+  constructor(opts: SimulationOptions) {
+    const rng = opts.rng ?? createRng();
+    const c = opts.character;
+    const ui: UiState = {
+      dialog: null,
+      shop: null,
+      depot: null,
+      market: null,
+      lootId: null,
+      regionId: null,
+      buildingId: null,
+      pending: null,
+    };
+    const events = new EventBus<GameEventMap>();
+    const player: PlayerEntity = {
+      id: PLAYER_ID,
+      kind: 'player',
+      x: opts.map.playerStart.x,
+      y: opts.map.playerStart.y,
+      facing: c.facing ?? 'down',
+      move: null,
+      moveEnd: 0,
+      stuckSince: 0,
+      stuckWith: null,
+      stuckAt: 0,
+      slowUntil: 0,
+      slowFactor: 1,
+      character: c,
+      stats: computeStats(opts.data, c),
+      buffs: [],
+      cooldowns: {},
+      targetId: null,
+      nextAttackAt: 0,
+      heldDir: null,
+      path: null,
+      pathGoal: null,
+      chaseRecalcAt: 0,
+      chasePath: null,
+      chasePaused: false,
+      lastMoveCommandAt: -Infinity,
+      following: false,
+      nextRegenAt: 0,
+      food: null,
+      dead: false,
+      invulnerableUntil: 0,
+      lastWarningAt: {},
+      lastAttackAt: -Infinity,
+      shieldTraining: newShieldTraining(),
+      queuedSpell: null,
+      scope: { ui, events },
+    };
+    this.world = {
+      data: opts.data,
+      map: opts.map,
+      rng,
+      loot: opts.loot ?? createLootGenerator(rng),
+      events,
+      now: 0,
+      player,
+      human: player,
+      heroes: new Map(),
+      auto: { ...DEFAULT_AUTO },
+      social: Object.assign(
+        newSocialState(
+          c.flags.pvp === true,
+          c.flags.war ? (c.flags.warGuilds ? 'guilds' : 'ffa') : 'off',
+          c.flags.pvpEnforced === true,
+        ),
+        { clock: opts.clock },
+      ),
+      monsters: new Map(),
+      npcs: new Map(),
+      lootBags: new Map(),
+      market: opts.market ?? emptyMarket(),
+      lifelike: opts.lifelike ?? false,
+      corpses: new Map(),
+      occupancy: new Map(),
+      doorsOpen: new Map(),
+      ui,
+      seq: 0,
+      nextDoorCheckAt: 0,
+    };
+    const w = this.world;
+    // posição salva válida?
+    const pos = c.position;
+    if (opts.restorePosition && pos && !isSolid(w.map, pos.x, pos.y)) {
+      player.x = pos.x;
+      player.y = pos.y;
+    }
+    placeOccupant(w, player);
+    loadPk(w, player); // caveira, PZ lock e mortes injustas de sessões anteriores
+    // NPCs
+    for (const n of w.map.npcs) {
+      const def = w.data.npcs[n.npcId];
+      if (!def) continue;
+      const npc: NpcEntity = {
+        id: `npc:${n.npcId}`,
+        kind: 'npc',
+        def,
+        x: n.x,
+        y: n.y,
+        homeX: n.x,
+        homeY: n.y,
+        facing: n.facing,
+        move: null,
+        moveEnd: 0,
+        nextWanderAt: 2000,
+      };
+      w.npcs.set(npc.id, npc);
+      placeOccupant(w, npc);
+    }
+    // monstros
+    for (const s of w.map.spawns) {
+      for (let i = 0; i < s.count; i++) {
+        const cell = findSpawnCell(w, s.x, s.y, s.radius);
+        if (!cell) continue;
+        const m = createMonster(w, s.monsterId, s.id, cell.x, cell.y);
+        m.homeX = s.x;
+        m.homeY = s.y;
+        w.monsters.set(m.id, m);
+        placeOccupant(w, m);
+      }
+    }
+    refreshStats(w);
+    updateRegion(w);
+    for (const hc of opts.heroes ?? []) this.addHero(hc.hero, hc.character);
+    if (w.social.war.mode === 'guilds') setWarMode(w, 'guilds'); // sorteio com todos que já estão online
+    marketCollect(w, w.human);
+    // os heróis por perto reagem ao jogador: "gz" no nível novo, "F" quando ele cai
+    w.human.scope.events.on('levelUp', (e) =>
+      reactNearby(w, w.human, 'congrats', { player: w.human.character.name, level: e.level }),
+    );
+    w.human.scope.events.on('playerDied', () =>
+      reactNearby(w, w.human, 'rip', { player: w.human.character.name }),
+    );
+  }
+
+  /** Coloca um herói (personagem com vida própria) no mundo. */
+  addHero(hero: HeroDef, character: CharacterState): HeroEntity {
+    const w = this.world;
+    const h = addHero(w, hero, character);
+    ensureGuild(w, h.id);
+    asActor(w, h, () => {
+      refreshStats(w);
+      updateRegion(w);
+    });
+    marketCollect(w, h);
+    w.events.emit('heroesChanged', {});
+    return h;
+  }
+
+  /**
+   * Desloga um herói: sai do grupo, larga alvos e convites e some do mundo (o progresso deve ser salvo antes por quem
+   * chama). Retorna o herói removido.
+   */
+  /** Heróis numa pausa (fora do mundo): voltam sozinhos quando ela acaba. */
+  readonly resting: { hero: HeroDef; character: CharacterState; backAt: number }[] = [];
+
+  /** O herói que terminou a sessão sai para uma pausa: o progresso vai para ser salvo e ele volta depois. */
+  private restHero(h: HeroEntity): void {
+    const w = this.world;
+    const prof = profileOf(h);
+    const snap = heroSnapshot(w, h);
+    this.removeHero(h.hero.id);
+    const minutes = prof.breakMin[0] + w.rng.next() * (prof.breakMin[1] - prof.breakMin[0]);
+    this.resting.push({ hero: h.hero, character: snap, backAt: w.now + minutes * 60000 });
+    w.events.emit('heroLoggedOut', { heroId: h.hero.id, character: snap });
+  }
+
+  /** Pausas: quem está pronto para sair sai; quem terminou a pausa volta (avisando no chat). */
+  private updateRest(): void {
+    const w = this.world;
+    for (const h of [...w.heroes.values()]) if (h.brain.human.logoutReady) this.restHero(h);
+    for (const r of [...this.resting]) {
+      if (w.now < r.backAt) continue;
+      this.resting.splice(this.resting.indexOf(r), 1);
+      const h = this.addHero(r.hero, r.character);
+      h.brain.human.justBack = true;
+    }
+  }
+
+  /** Tira um herói em pausa da fila (o jogador o deslogou de vez pela lista de online). */
+  dropResting(heroId: string): CharacterState | null {
+    const i = this.resting.findIndex((r) => r.hero.id === heroId || r.character.id === heroId);
+    if (i < 0) return null;
+    return this.resting.splice(i, 1)[0]!.character;
+  }
+
+  removeHero(heroId: string): HeroEntity | null {
+    const w = this.world;
+    const h = [...w.heroes.values()].find((x) => x.hero.id === heroId || x.id === heroId);
+    if (!h) return null;
+    if (partyOf(w, h.id)) leaveParty(w, h.id, true);
+    w.social.invites = w.social.invites.filter((i) => i.fromId !== h.id && i.toId !== h.id);
+    for (const m of w.monsters.values())
+      if (m.targetId === h.id) {
+        m.targetId = null;
+        if (m.state === 'chasing' || m.state === 'attacking') m.state = 'returning';
+      }
+    for (const a of allActors(w)) if (a.targetId === h.id) a.targetId = null;
+    removeOccupant(w, h);
+    w.heroes.delete(h.id);
+    w.events.emit('heroesChanged', {});
+    w.events.emit('partyChanged', {});
+    return h;
+  }
+
+  get events(): EventBus<GameEventMap> {
+    return this.world.events;
+  }
+  get now(): number {
+    return this.world.now;
+  }
+  get isPaused(): boolean {
+    return this.paused;
+  }
+
+  setPaused(p: boolean): void {
+    this.paused = p;
+    if (p) this.world.player.heldDir = null;
+  }
+
+  /** Avança a simulação. Quadros longos são divididos em passos de até 50 ms (comportamento estável em qualquer FPS). */
+  update(dtMs: number): void {
+    if (this.paused) return;
+    let remaining = Math.max(0, Math.min(MAX_FRAME_MS, dtMs));
+    while (remaining > 0) {
+      const step = Math.min(MAX_STEP_MS, remaining);
+      this.tick(step);
+      remaining -= step;
+    }
+  }
+
+  private tick(step: number): void {
+    const w = this.world;
+    w.now += step;
+    this.longReplans = 0;
+    this.tickActor(step);
+    updateAutoPlay(w);
+    // heróis: mesma sequência do jogador, cada um no próprio contexto, guiados pela IA
+    for (const h of w.heroes.values())
+      asActor(w, h, () => {
+        updateHeroBrain(w, h);
+        heroFollowTick(w, h);
+        this.tickActor(step);
+      });
+    for (const m of w.monsters.values()) updateMonster(w, m);
+    updateCityGuards(w);
+    updateNpcs(w);
+    this.updateRest();
+    this.updateWorldTimers();
+    updateDoors(w);
+    updateSocial(w);
+  }
+
+  /** Um passo do ator em execução (`w.player`): movimento, combate, regeneração, interações. */
+  private tickActor(step: number): void {
+    const w = this.world;
+    const p = w.player;
+    p.character.stats.playTimeMs += step;
+    settle(p, w.now);
+    this.updatePlayerMovement();
+    updatePlayerCombat(w);
+    updateQueuedSpell(w);
+    this.updateActorTimers();
+    updatePendingInteraction(w);
+    updateUiDistance(w);
+    updateRegion(w);
+  }
+
+  /**
+   * Orçamento de recálculos de rota longa por quadro (heróis bloqueados): com muita gente, vários replanejando no
+   * mesmo quadro davam engasgos. Os que passam do orçamento esperam alguns quadros (o jogador nunca espera).
+   */
+  private longReplans = 0;
+  private static readonly LONG_REPLANS_PER_TICK = 2;
+
+  private updatePlayerMovement(): void {
+    const w = this.world;
+    const p = w.player;
+    if (p.dead || isMoving(p, w.now)) return;
+    // lentidão (gelo) reduz o passo; "seguir o líder" acelera um pouco quem ficou para trás
+    const speed = actorSpeed(w, p);
+    const dir = p.heldDir;
+    if (dir) {
+      if (p === w.human) this.goToId = null; // andar por conta própria cancela o "Ir até"
+      p.path = null;
+      p.pathGoal = null;
+      w.ui.pending = null;
+      // Preserve analog intent when rounding to a cardinal direction hits a creature.
+      const analog = p === w.human ? this.joystickVector : null;
+      if (analog && (!dir.dx || !dir.dy)) {
+        const nx = p.x + dir.dx;
+        const ny = p.y + dir.dy;
+        const id = occupant(w, nx, ny);
+        const creature = id && (id === w.human.id || w.heroes.has(id) || w.monsters.has(id));
+        // Ignore tiny finger jitter; never choose a side the player did not indicate.
+        const minor = dir.dx ? analog.y : analog.x;
+        if (creature && !canEnter(w, nx, ny, false, p.id) && Math.abs(minor) >= 0.1) {
+          const dx = Math.sign(analog.x);
+          const dy = Math.sign(analog.y);
+          if (tryStep(w, p, dx, dy, speed, false)) return;
+        }
+      }
+      if (tryStep(w, p, dir.dx, dir.dy, speed, false)) return;
+      // deslizar ao encostar na diagonal (sensação de controle mais suave)
+      if (
+        dir.dx &&
+        dir.dy &&
+        (tryStep(w, p, dir.dx, 0, speed, false) || tryStep(w, p, 0, dir.dy, speed, false))
+      )
+        return;
+      p.facing = dir.dx ? (dir.dx < 0 ? 'left' : 'right') : dir.dy < 0 ? 'up' : 'down';
+      return;
+    }
+    // em grupo com outro líder (formação seguir/fila), sem alvo e sem caminho escolhido por você: anda junto do líder.
+    // O caminho é refeito a cada ~0,25 s enquanto anda (sem parar entre recálculos) e para perto dele.
+    // atacar cancela o seguir: o caminho do seguir é largado ao mirar uma criatura e só volta depois de ~6 s sem combate
+    if (p === w.human && this.goToId && this.goToTick()) return;
+    if (p === w.human && p.following && (p.targetId || w.now - p.lastAttackAt < FOLLOW_COMBAT_PAUSE_MS)) {
+      p.path = null;
+      p.pathGoal = null;
+      p.following = false;
+    }
+    if (
+      p === w.human &&
+      !this.goToId &&
+      !p.targetId &&
+      w.now - p.lastAttackAt >= FOLLOW_COMBAT_PAUSE_MS &&
+      (!p.path?.length || p.following) &&
+      w.now - p.lastMoveCommandAt > 1200
+    ) {
+      const spot = formationSpot(w, p.id);
+      if (!spot) p.following = false;
+      else if (Math.max(Math.abs(spot.x - p.x), Math.abs(spot.y - p.y)) <= spot.tolerance) {
+        if (p.following) {
+          p.path = null;
+          p.pathGoal = null;
+          p.following = false;
+        }
+      } else if (trailStep(w, p, spot.tolerance) === 'moved') {
+        p.following = true; // anda pela trilha do líder: sem recalcular rota a cada passo
+        return;
+      } else if (w.now >= p.chaseRecalcAt) {
+        p.chaseRecalcAt = w.now + 250;
+        const path = pathTo(w, p, spot, false, { stopWithin: spot.tolerance, maxNodes: 4000 });
+        if (path?.length) {
+          p.path = path;
+          p.pathGoal = { ...path[path.length - 1]! };
+          p.following = true;
+        }
+      }
+    }
+    if (p.path && !p.path.length) {
+      p.path = null;
+      p.pathGoal = null;
+    }
+    if (p.path && p.path.length) {
+      const pathSpeed = speed * (p.following ? followCatchUp(w, p) : 1);
+      const next = p.path[0]!;
+      const dx = next.x - p.x;
+      const dy = next.y - p.y;
+      if (Math.abs(dx) <= 1 && Math.abs(dy) <= 1 && tryStep(w, p, dx, dy, pathSpeed, false)) {
+        p.path.shift();
+        return;
+      }
+      // PZ passage can relocate the actor and clear its route inside tryStep.
+      // Replan from the landing tile before inspecting the old route again.
+      if (!p.path) {
+        const goal = p.pathGoal;
+        p.path = goal ? pathTo(w, p, goal, false, { maxNodes: 120000 }) : null;
+        if (!p.path) p.pathGoal = null;
+        return;
+      }
+      // bloqueado (ex.: monstro ou outro personagem no caminho). Com muita gente no mundo, replanejar a rota inteira a
+      // cada quadro era o maior custo do jogo (A* de até 120 mil nós por herói travado, 60 vezes por segundo):
+      // 1) herói espera um instante antes de replanejar (como gente esperando o outro passar); o jogador, não;
+      if (p !== w.human) {
+        if (w.now < (p.replanAt ?? 0)) return;
+        p.replanAt = w.now + 200 + w.rng.next() * 150;
+      }
+      // 2) conserto local: desvia só até um ponto alguns passos à frente na rota que já tinha (busca pequena)
+      const AHEAD = 6;
+      if (p.path.length > AHEAD + 2) {
+        const detour = pathTo(w, p, p.path[AHEAD]!, false, { maxNodes: 1500 });
+        if (detour?.length && detour.length <= AHEAD + 8) {
+          p.path = [...detour, ...p.path.slice(AHEAD + 1)];
+          return;
+        }
+      }
+      // 3) sem desvio curto: recalcula até o destino
+      const goal = p.pathGoal;
+      // viagem longa (mini mapa) replaneja com mais fôlego; caminho curto, barato
+      const far = goal ? Math.max(Math.abs(goal.x - p.x), Math.abs(goal.y - p.y)) > 30 : false;
+      if (far && p !== w.human) {
+        if (this.longReplans >= GameSimulation.LONG_REPLANS_PER_TICK) {
+          p.replanAt = w.now + 50 + w.rng.next() * 100;
+          return;
+        }
+        this.longReplans++;
+      }
+      p.path = goal
+        ? pathTo(w, p, goal, false, { stopWithin: w.ui.pending ? 1 : 0, maxNodes: far ? 120000 : 2500 })
+        : null;
+      if (!p.path) p.pathGoal = null;
+      return;
+    }
+    // perseguição automática do alvo quando fora de alcance (desligada no modo "atacar parado")
+    const t = currentTarget(w) ?? currentActorTarget(w);
+    const stand = p.character.flags.standAttack === true;
+    if (t && !stand && !p.chasePaused && !weaponCanReach(w, t)) {
+      // sem arma (só magias): para a uns 4 tiles do alvo, no alcance dos feitiços
+      const spellOnly = !p.character.equipment.mainHand && p.character.vocation !== 'knight';
+      let stop = spellOnly ? 4 : p.stats.weapon.range <= 1 ? 1 : Math.max(1, p.stats.weapon.range - 1);
+      // já "no alcance" mas sem acertar (árvore ou parede no meio da mira): chega mais perto em vez de ficar parado
+      const d = Math.max(Math.abs(t.x - p.x), Math.abs(t.y - p.y));
+      if (d <= stop) stop = Math.max(1, d - 1);
+      chaseStep(w, p, t, stop);
+    }
+  }
+
+  private updateActorTimers(): void {
+    const w = this.world;
+    const p = w.player;
+    const c = p.character;
+    // regeneração periódica
+    if (!p.dead && w.now >= p.nextRegenAt) {
+      p.nextRegenAt = w.now + w.data.balance.player.regenTickMs;
+      const voc = w.data.vocations[c.vocation];
+      const pzMul = isPz(w.map, p.x, p.y) ? 2 : 1;
+      let hp = (voc.regen.health + Math.floor(c.level / 5)) * pzMul;
+      // área protegida: a vida volta em dobro, mas a mana não se recupera (poção ou fora dela)
+      const inPz = pzMul === 2;
+      let mp = inPz ? 0 : manaPerTick(w.data, c.vocation);
+      if (p.food && w.now < p.food.until) {
+        hp += p.food.health;
+        if (!inPz) mp += p.food.mana;
+      } else p.food = null;
+      for (const b of p.buffs) if (b.kind === 'regen' && b.expiresAt > w.now) hp += b.value;
+      c.health = Math.min(p.stats.maxHealth, c.health + hp);
+      c.mana = Math.min(p.stats.maxMana, c.mana + mp);
+    }
+    // buffs expirados
+    if (p.buffs.some((b) => b.expiresAt <= w.now)) {
+      p.buffs = p.buffs.filter((b) => b.expiresAt > w.now);
+      refreshStats(w);
+    }
+  }
+
+  private updateWorldTimers(): void {
+    const w = this.world;
+    // decomposição de corpos e loot
+    for (const [id, corpse] of w.corpses) if (corpse.expiresAt <= w.now) w.corpses.delete(id);
+    for (const [id, bag] of w.lootBags)
+      if (bag.expiresAt <= w.now) {
+        w.lootBags.delete(id);
+        for (const a of allActors(w))
+          if (a.scope.ui.lootId === id)
+            a.scope.ui.lootId =
+              [...w.lootBags.values()].find((b) => Math.max(Math.abs(b.x - a.x), Math.abs(b.y - a.y)) <= 1)
+                ?.id ?? null;
+        w.events.emit('lootChanged', { containerId: id });
+      }
+  }
+
+  // ------------------------------------------------------------------ comandos (entrada do jogador)
+  /** Vetor analógico (-1..1) do joystick/teclado; (0,0) para soltar. */
+  setMoveVector(x: number, y: number): void {
+    const dir = vectorToDir(x, y);
+    this.setMoveDir(dir);
+    this.joystickVector = dir ? { x, y } : null;
+  }
+  setMoveDir(dir: DirVector | null): void {
+    this.joystickVector = null;
+    const p = this.world.player;
+    p.heldDir = dir;
+    if (dir) this.manualMove();
+  }
+  /** Caminha até o tile (clique/toque no chão). Andar por conta própria pausa a perseguição do alvo. */
+  walkTo(x: number, y: number): boolean {
+    const ok = planWalk(this.world, x, y);
+    if (ok) this.manualMove();
+    return ok;
+  }
+  /** Viagem longa (toque no mini mapa): caminho pelo mapa todo, contornando monstros quando dá. */
+  travelTo(x: number, y: number): boolean {
+    // vai até o ponto alcançável mais perto do toque (margem do lago, cerca, porta...)
+    const t = nearestReachable(this.world, x, y) ?? { x, y };
+    const ok = planWalk(this.world, t.x, t.y, { maxNodes: 120000, avoidMonsters: true });
+    if (ok) this.manualMove();
+    return ok;
+  }
+  /** "Ir até" (lista de personagens online): personagem que o jogador está indo encontrar. */
+  goToId: string | null = null;
+  private goToReplanAt = 0;
+  /**
+   * Vai andando até o personagem, onde quer que ele esteja (a rota é refeita quando ele se afasta do destino) e para a
+   * 2 tiles dele. Não ataca nada no caminho. Andar, tocar no chão ou viajar pelo mini mapa cancela.
+   */
+  goToActor(id: string): boolean {
+    const w = this.world;
+    const t = actorById(w, id);
+    if (!t || t.dead || t === w.human) return false;
+    this.manualMove();
+    this.goToId = id;
+    this.goToReplanAt = 0;
+    message(w, `Indo até ${t.character.name}...`, 'system');
+    return true;
+  }
+  /** Um passo do "Ir até": retorna true se chegou (parou) neste passo. */
+  private goToTick(): boolean {
+    const w = this.world;
+    const p = w.human;
+    const t = this.goToId ? actorById(w, this.goToId) : undefined;
+    if (!t || t.dead) {
+      this.goToId = null;
+      message(w, 'Ir até: o personagem saiu do jogo ou morreu.', 'system');
+      return false;
+    }
+    const d = Math.max(Math.abs(t.x - p.x), Math.abs(t.y - p.y));
+    if (d <= 2) {
+      this.goToId = null;
+      p.path = null;
+      p.pathGoal = null;
+      message(w, `Você chegou perto de ${t.character.name}.`, 'system');
+      return true;
+    }
+    if (p.targetId) p.chasePaused = true; // não ataca: só anda
+    // refaz a rota quando ele se afasta do destino (mais folga e menos recálculo quando ainda está longe)
+    const g = p.pathGoal;
+    const stale =
+      !p.path?.length ||
+      !g ||
+      Math.max(Math.abs(g.x - t.x), Math.abs(g.y - t.y)) > Math.max(2, Math.floor(d / 8));
+    if (stale && w.now >= this.goToReplanAt) {
+      this.goToReplanAt = w.now + (d > 40 ? 2000 : 600);
+      planWalk(w, t.x, t.y, { quiet: true, maxNodes: 120000, avoidMonsters: true, stopWithin: 1 });
+      p.following = false;
+    }
+    return false;
+  }
+  private manualMove(): void {
+    this.goToId = null;
+    const p = this.world.player;
+    p.lastMoveCommandAt = this.world.now;
+    p.following = false;
+    if (p.targetId) p.chasePaused = true;
+  }
+  stop(): void {
+    const p = this.world.player;
+    p.path = null;
+    p.pathGoal = null;
+    p.heldDir = null;
+  }
+  setTarget(id: string | null): void {
+    setTarget(this.world, id);
+  }
+  cycleTarget(): void {
+    cycleTarget(this.world);
+  }
+  /** Botão de seleção de personagem (jogador ou herói): marca o próximo por perto; depois do último, desmarca. */
+  cycleActorSelection(): void {
+    cycleActorSelection(this.world);
+  }
+  /** Toque numa entidade: alvo (monstro) ou interação (NPC). */
+  tapEntity(id: string): void {
+    const w = this.world;
+    if (w.monsters.has(id)) {
+      setTarget(w, w.player.targetId === id ? null : id);
+      return;
+    }
+    if (w.npcs.has(id)) interactWith(w, { kind: 'npc', id });
+  }
+  tapLoot(id: string): void {
+    interactWith(this.world, { kind: 'loot', id });
+  }
+  interact(): boolean {
+    return interactNearest(this.world);
+  }
+  castSpell(spellId: string): boolean {
+    return castSpell(this.world, spellId);
+  }
+  useItem(index: number): boolean {
+    return useInventoryItem(this.world, index);
+  }
+  useItemById(itemId: string): boolean {
+    return useItemById(this.world, itemId);
+  }
+  equip(index: number): boolean {
+    return equipItem(this.world, index);
+  }
+  unequip(slot: EquipSlot): boolean {
+    return unequipSlot(this.world, slot);
+  }
+  /** Joga o item no chão, embaixo do personagem (vira um saco de loot). */
+  drop(index: number): void {
+    dropItem(this.world, index);
+  }
+  /** Compacta a mochila sem alterar a ordem relativa dos itens. */
+  organizeInventory(): void {
+    const inv = this.world.player.character.inventory;
+    const filled = inv.filter((s): s is NonNullable<typeof s> => s !== null);
+    inv.splice(0, inv.length, ...filled, ...Array.from({ length: inv.length - filled.length }, () => null));
+    this.world.events.emit('itemsChanged', {});
+    this.world.events.emit('saveRequested', { reason: 'inventory' });
+  }
+  /** Coleta da janela de loot: 'all' (todos os sacos ao redor), 'gold' ou um item de um saco específico. */
+  /** Pega tudo, só o ouro, uma pilha ou um grupo de pilhas do mesmo item (de vários sacos de uma vez). */
+  takeLoot(
+    which: 'all' | 'gold' | { bagId: string; index: number } | { refs: { bagId: string; index: number }[] },
+  ): void {
+    if (!this.world.ui.lootId) return;
+    if (which === 'all') takeAllNearbyLoot(this.world);
+    else if (which === 'gold') takeNearbyGold(this.world);
+    else if ('refs' in which)
+      // do maior índice para o menor em cada saco: tirar uma pilha não muda o índice das anteriores
+      for (const r of [...which.refs].sort((a, b) => b.index - a.index))
+        takeLoot(this.world, r.bagId, r.index);
+    else takeLoot(this.world, which.bagId, which.index);
+  }
+  closeLoot(): void {
+    this.world.ui.lootId = null;
+  }
+  dialogChoose(index: number): void {
+    chooseDialogOption(this.world, index);
+  }
+  closeDialog(): void {
+    this.world.ui.dialog = null;
+  }
+  closeShop(): void {
+    this.world.ui.shop = null;
+  }
+  closeDepot(): void {
+    this.world.ui.depot = null;
+  }
+  depotDeposit(invIndex: number): boolean {
+    return depotDeposit(this.world, invIndex);
+  }
+  /** Compra agora pelo menor preço anunciado (até `maxPrice`). */
+  marketBuyAtShop(itemId: string, qty: number): boolean {
+    return marketBuyAtShop(this.world, itemId, qty);
+  }
+  marketShopTrade(side: 'buy' | 'sell', itemId: string, qty: number): boolean {
+    return marketShopTrade(this.world, side, itemId, qty);
+  }
+  marketBuyNow(itemId: string, qty: number, maxPrice = Infinity): boolean {
+    return marketBuyNow(this.world, itemId, qty, maxPrice);
+  }
+  /** Vende agora para as maiores ofertas de compra (a partir de `minPrice`). */
+  marketSellNow(itemId: string, qty: number, minPrice = 0): boolean {
+    return marketSellNow(this.world, itemId, qty, minPrice);
+  }
+  /** Cria uma oferta de venda ou de compra (o que cruza com o outro lado fecha na hora). */
+  marketOffer(side: OfferSide, itemId: string, qty: number, price: number): boolean {
+    return marketOffer(this.world, side, itemId, qty, price);
+  }
+  marketSellAll(itemIds: readonly string[], includeKept = false): boolean {
+    return marketSellAll(this.world, itemIds, includeKept);
+  }
+  marketCancel(offerId: string): boolean {
+    return marketCancel(this.world, offerId);
+  }
+  marketTakeParcels(): boolean {
+    return marketTakeParcels(this.world);
+  }
+  closeMarket(): void {
+    this.world.ui.market = null;
+  }
+  depotWithdraw(depotIndex: number): boolean {
+    return depotWithdraw(this.world, depotIndex);
+  }
+  depotDepositAll(): boolean {
+    return depotDepositAll(this.world);
+  }
+  bankGold(op: 'deposit' | 'withdraw', amount: number): boolean {
+    return bankGold(this.world, op, amount);
+  }
+  buy(itemId: string, qty: number): boolean {
+    return buyItem(this.world, itemId, qty);
+  }
+  sell(itemId: string, qty: number): boolean {
+    return sellItem(this.world, itemId, qty);
+  }
+  sellAll(): boolean {
+    return sellAllItems(this.world);
+  }
+  /** Trava/destrava a venda de um item (fica fora do "vender tudo"). */
+  setAuto(patch: Partial<AutoSettings>): void {
+    Object.assign(this.world.auto, patch);
+  }
+
+  setSellLock(target: SellLockTarget, locked: boolean): void {
+    const w = this.world;
+    const c = w.player.character;
+    const stack = typeof target === 'number' ? c.inventory[target] : c.equipment[target];
+    const def = stack && w.data.items[stack.itemId];
+    if (!def) return;
+    setSellLock(c, target, locked);
+    message(
+      w,
+      locked ? `${def.name}: venda travada (não entra no "Vender tudo").` : `${def.name}: venda destravada.`,
+      'system',
+    );
+    w.events.emit('itemsChanged', {});
+    w.events.emit('saveRequested', { reason: 'lock' });
+  }
+  respawn(): void {
+    respawnPlayer(this.world);
+  }
+
+  // ------------------------------------------------------------------ grupo, PK e modo de ataque
+  /** Convida um personagem para o grupo (quem convida vira o líder ao formar o grupo). */
+  partyInvite(toId: string): boolean {
+    const w = this.world;
+    const fail = invite(w, w.player.id, toId);
+    if (fail) warnThrottled(w, `party:${fail}`, PARTY_FAIL_MESSAGE[fail], 600);
+    // herói responde na hora (sem precisar insistir)
+    const hero = w.heroes.get(toId);
+    if (!fail && hero) asActor(w, hero, () => answerInviteNow(w, hero));
+    return !fail;
+  }
+  partyAccept(): boolean {
+    const w = this.world;
+    const fail = acceptInvite(w, w.player.id);
+    if (fail) warnThrottled(w, `party:${fail}`, PARTY_FAIL_MESSAGE[fail], 600);
+    return !fail;
+  }
+  partyDecline(): void {
+    declineInvite(this.world, this.world.player.id);
+  }
+  partyLeave(): void {
+    leaveParty(this.world, this.world.player.id);
+  }
+  partyKick(id: string): void {
+    const w = this.world;
+    const fail = kickFromParty(w, w.player.id, id);
+    if (fail) warnThrottled(w, `party:${fail}`, PARTY_FAIL_MESSAGE[fail], 600);
+  }
+  /** Escolhe o líder do grupo (qualquer membro, inclusive você de volta). Os outros membros são heróis com
+   * vida própria e aceitam o que o jogador decide no painel do grupo. */
+  partyPassLeader(id: string): void {
+    const w = this.world;
+    const party = w.social.party;
+    const asLeader = party && party.members.includes(w.player.id) ? party.leaderId : w.player.id;
+    const fail = party?.leaderId === id ? null : passLeadership(w, asLeader, id);
+    if (fail) warnThrottled(w, `party:${fail}`, PARTY_FAIL_MESSAGE[fail], 600);
+  }
+  /** Botão "Chamar" do grupo: o herói larga o que faz e vem até o líder. */
+  partyCall(id: string): boolean {
+    const w = this.world;
+    const h = w.heroes.get(id);
+    if (!h || !summonHero(w, h, w.human.id)) return false;
+    const party = partyOf(w, id)!;
+    const to = party.leaderId === id ? w.human.character.name : actorName(w, party.leaderId);
+    w.events.emit('message', {
+      text: `${h.character.name} parou o que fazia e está indo até ${to}.`,
+      kind: 'system',
+    });
+    return true;
+  }
+  /**
+   * Ordens táticas do painel do grupo para os heróis: atacar o alvo do jogador, segurar a posição (de novo: soltar) ou
+   * voltar à vila (vender, repor, curar e voltar a seguir).
+   */
+  partyOrder(kind: 'attack' | 'hold' | 'town'): boolean {
+    const w = this.world;
+    const party = partyOf(w, w.human.id);
+    const heroes = (party?.members ?? [])
+      .map((id) => w.heroes.get(id))
+      .filter((h): h is NonNullable<typeof h> => !!h && !h.dead);
+    if (!heroes.length) {
+      w.events.emit('message', { text: 'Nenhum herói no seu grupo para receber a ordem.', kind: 'system' });
+      return false;
+    }
+    let order: 'attack' | 'hold' | 'release' | 'town' = kind;
+    const target = kind === 'attack' ? w.human.targetId : null;
+    if (kind === 'attack' && !target) {
+      w.events.emit('message', {
+        text: 'Selecione um alvo primeiro: os heróis atacam o mesmo alvo que você.',
+        kind: 'system',
+      });
+      return false;
+    }
+    if (kind === 'hold' && heroes.every((h) => h.brain.order?.kind === 'hold')) order = 'release';
+    const done = heroes.filter((h) => orderHero(w, h, order, target)).map((h) => h.character.name);
+    if (!done.length) return false;
+    const what =
+      order === 'attack'
+        ? 'atacando o seu alvo'
+        : order === 'hold'
+          ? 'segurando a posição'
+          : order === 'release'
+            ? 'livres de novo (seguem o grupo)'
+            : 'indo à vila (vender, repor e se curar)';
+    w.events.emit('message', { text: `${done.join(', ')}: ${what}.`, kind: 'system' });
+    return true;
+  }
+  configureParty(patch: PartySetting): void {
+    const w = this.world;
+    const party = w.social.party;
+    const asLeader = party && party.members.includes(w.player.id) ? party.leaderId : w.player.id;
+    const fail = configureParty(w, asLeader, patch);
+    if (fail) warnThrottled(w, `party:${fail}`, PARTY_FAIL_MESSAGE[fail], 600);
+    if (!fail && patch.formation && patch.formation !== 'free') {
+      for (const id of party?.members ?? []) {
+        const h = w.heroes.get(id);
+        if (!h || h.id === party?.leaderId || h.dead) continue;
+        h.brain.order = null;
+        h.brain.nextThinkAt = 0;
+        summonHero(w, h, w.human.id);
+      }
+    }
+    // regras do grupo ficam guardadas no personagem: o próximo grupo que ele liderar já começa com elas
+    if (!fail && asLeader === w.human.id) {
+      const c = w.human.character;
+      c.settings = {
+        ...c.settings,
+        party: { ...c.settings?.party, ...(patch as Record<string, string | boolean>) },
+      };
+    }
+  }
+  disbandParty(): void {
+    const w = this.world;
+    const fail = disbandParty(w, w.player.id);
+    if (fail) warnThrottled(w, `party:${fail}`, PARTY_FAIL_MESSAGE[fail], 600);
+  }
+  /**
+   * Tipo de mundo: 'off' (sem PvP), 'pvp' (ataques com caveiras) ou 'enforced' (ataques sem caveiras: entrar nele
+   * apaga as caveiras, mortes injustas e vinganças de todos).
+   */
+  setWorldPvp(mode: WorldPvpMode): void {
+    const w = this.world;
+    const enforced = mode === 'enforced';
+    w.social.enforced = enforced;
+    w.human.character.flags.pvpEnforced = enforced;
+    if (enforced) {
+      w.social.skulls.clear();
+      w.social.unjust.clear();
+      w.social.revenge.clear();
+      for (const a of allActors(w)) savePk(w, a);
+    }
+    if (mode === 'off') {
+      this.setPvp(false);
+      return;
+    }
+    if (!w.social.pvp) this.setPvp(true, true);
+    message(
+      w,
+      enforced
+        ? 'Mundo PvP Enforced: todos podem se atacar fora das áreas protegidas, sem caveiras nem morte injusta.'
+        : 'Mundo PvP: ataques entre personagens valem com caveiras, PZ lock e morte injusta.',
+      'warning',
+    );
+    w.events.emit('socialChanged', {});
+  }
+  /** Permissão de PK (ataque entre personagens). Desligar encerra os ataques em andamento. */
+  setPvp(on: boolean, quiet = false): void {
+    const w = this.world;
+    // desligar o PK encerra também a guerra (que depende dele)
+    if (!on && atWar(w)) this.setWar('off', true);
+    w.social.pvp = on;
+    w.human.character.flags.pvp = on;
+    if (!on) for (const a of allActors(w)) if (a.targetId && !w.monsters.has(a.targetId)) a.targetId = null;
+    if (!quiet)
+      message(
+      w,
+      on ? 'PK ativado: personagens podem se atacar fora das áreas protegidas.' : 'PK desativado.',
+      on ? 'warning' : 'system',
+    );
+    w.events.emit('socialChanged', {});
+  }
+  /**
+   * Modo guerra: 'ffa' (cada um por si), 'guilds' (duas guildas sorteadas) ou 'off'. Ligar liga o PK; desligar
+   * mantém o PK como estava e encerra os ataques entre quem não é mais inimigo.
+   */
+  setWar(mode: WarMode, quiet = false): void {
+    const w = this.world;
+    setWarMode(w, mode);
+    const c = w.human.character;
+    c.flags.war = mode !== 'off';
+    c.flags.warGuilds = mode === 'guilds';
+    if (mode !== 'off') c.flags.pvp = true;
+    // ninguém continua mirando um aliado (guildas novas) nem segue brigando quando a guerra acaba
+    for (const a of allActors(w))
+      if (a.targetId && !w.monsters.has(a.targetId)) {
+        const t = actorById(w, a.targetId);
+        if (!t || mode === 'off' || canAttackActor(w, a, t)) a.targetId = null;
+      }
+    // vale na hora: cada herói reavalia tudo no próximo pensamento (alvos, grupos, caçadas)
+    for (const h of w.heroes.values()) asActor(w, h, () => heroWarChanged(w, h));
+    if (!quiet)
+      message(
+        w,
+        mode === 'off'
+          ? 'Modo guerra desligado.'
+          : mode === 'ffa'
+            ? 'GUERRA: cada um por si! Todos podem se atacar fora das áreas protegidas (caveiras e perdas valem).'
+            : `GUERRA DE GUILDAS: você é do ${GUILD_NAMES[guildOf(w, w.human.id) ?? 0]}. A outra guilda é inimiga (caveiras e perdas valem).`,
+        mode === 'off' ? 'system' : 'warning',
+      );
+    w.events.emit('socialChanged', {});
+  }
+  /** Modo de ataque: parado (não persegue o alvo) ou seguindo o alvo. */
+  setStandAttack(stand: boolean): void {
+    const c = this.world.player.character;
+    c.flags.standAttack = stand;
+    message(
+      this.world,
+      stand ? 'Modo de ataque: parado (não persegue o alvo).' : 'Modo de ataque: seguir o alvo.',
+      'system',
+    );
+    this.world.events.emit('socialChanged', {});
+  }
+  /** Fala do herói tocado (o que ele está fazendo). */
+  talkTo(id: string): void {
+    const w = this.world;
+    const hero = w.heroes.get(id);
+    if (hero) asActor(w, hero, () => heroStatusLine(w, hero));
+  }
+  /** Vincula uma magia, item ou poção automática a um atalho (se já estava em outro, troca de lugar). */
+  setHotbar(index: number, entry: HotbarEntry): void {
+    const c = this.world.player.character;
+    if (c.hotbar.length !== HOTBAR_SIZE) c.hotbar = normalizeHotbar(this.world.data, c.vocation, c.hotbar);
+    assignHotbar(c.hotbar, index, entry);
+    this.world.events.emit('saveRequested', { reason: 'hotbar' });
+  }
+  /** Troca o conjunto de favoritos ativo (0 a 2); a barra da tela passa a ser a dele. `to` omitido = o próximo. */
+  setHotbarSet(to?: number): boolean {
+    const c = this.world.player.character;
+    if (!Array.isArray(c.hotbarSets) || c.hotbarSets.length !== HOTBAR_SETS)
+      Object.assign(c, normalizeHotbarSets(this.world.data, c.vocation, c.hotbar, c.hotbarSets, c.hotbarSet));
+    const next = to ?? (c.hotbarSet + 1) % HOTBAR_SETS;
+    if (!switchHotbarSet(c, next)) return false;
+    this.world.events.emit('saveRequested', { reason: 'hotbar' });
+    return true;
+  }
+
+  // ------------------------------------------------------------------ utilidades para testes/depuração
+  teleportPlayer(x: number, y: number): void {
+    const w = this.world;
+    if (!canEnter(w, x, y, false, w.player.id)) return;
+    teleport(w, w.player, x, y);
+    updateRegion(w);
+  }
+  distanceTo(id: string): number {
+    const m = this.world.monsters.get(id) ?? this.world.npcs.get(id);
+    return m ? chebyshev(m, this.world.player) : Infinity;
+  }
+
+  /** Estado persistível atualizado (posição, orientação). */
+  snapshotCharacter(): CharacterState {
+    const p = this.world.player;
+    const c = p.character;
+    c.position = { x: p.x, y: p.y };
+    c.facing = p.facing;
+    c.updatedAt = Date.now();
+    savePk(this.world, p);
+    return structuredClone(c);
+  }
+}

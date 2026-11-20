@@ -1,0 +1,363 @@
+import { useEffect, useState } from 'react';
+import { useLocal, useSession, useSnap } from '../../integration/game-ui-bridge/hooks';
+import { Panel, PixelButton } from '../common/primitives';
+
+function Slider({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+  return (
+    <label className="flex items-center gap-3 py-1 text-[13px]">
+      <span className="w-20 shrink-0">{label}</span>
+      <input
+        type="range"
+        min={0}
+        max={100}
+        value={Math.round(value * 100)}
+        onChange={(e) => onChange(Number(e.target.value) / 100)}
+        className="flex-1 accent-[#e0b03a]"
+      />
+      <span className="w-9 text-right text-muted">{Math.round(value * 100)}</span>
+    </label>
+  );
+}
+
+export function SettingsPanel({
+  onClose,
+  zoomBias,
+  setZoomBias,
+  showFps,
+  setShowFps,
+  showLog,
+  setShowLog,
+}: {
+  onClose: () => void;
+  zoomBias: number;
+  setZoomBias: (v: number) => void;
+  showFps: boolean;
+  setShowFps: (v: boolean) => void;
+  showLog: boolean;
+  setShowLog: (v: boolean) => void;
+}) {
+  const session = useSession();
+  const audio = session.audio;
+  const [s, setS] = useState(audio.getSettings());
+  const saving = useLocal((l) => l.saving);
+  const lastSaved = useLocal((l) => l.lastSaved);
+  useEffect(() => audio.onChange(() => setS(audio.getSettings())), [audio]);
+  useEffect(() => {
+    session.sim.setPaused(true);
+    return () => session.sim.setPaused(false);
+  }, [session]);
+  return (
+    <Panel title="Menu (pausado)" onClose={onClose} icon="ui_gear">
+      <h3 className="mb-1 text-[13px] text-gold">Áudio</h3>
+      <label className="flex items-center gap-2 py-1 text-[13px]">
+        <input
+          type="checkbox"
+          checked={!s.muted}
+          onChange={(e) => audio.setSettings({ muted: !e.target.checked })}
+          className="h-5 w-5 accent-[#e0b03a]"
+        />
+        Som ativado
+      </label>
+      <Slider label="Geral" value={s.master} onChange={(v) => audio.setSettings({ master: v })} />
+      <Slider label="Efeitos" value={s.sfx} onChange={(v) => audio.setSettings({ sfx: v })} />
+      <Slider label="Música" value={s.music} onChange={(v) => audio.setSettings({ music: v })} />
+      <h3 className="mb-1 mt-3 text-[13px] text-gold">Tela</h3>
+      <div className="flex gap-2 py-1">
+        {[
+          [-1, 'Perto'],
+          [0, 'Normal'],
+          [1, 'Longe'],
+        ].map(([v, l]) => (
+          <PixelButton
+            key={l}
+            variant={zoomBias === v ? 'gold' : 'stone'}
+            onClick={() => setZoomBias(v as number)}
+          >
+            {l}
+          </PixelButton>
+        ))}
+      </div>
+      <label className="flex items-center gap-2 py-1 text-[13px]">
+        <input
+          type="checkbox"
+          checked={showFps}
+          onChange={(e) => setShowFps(e.target.checked)}
+          className="h-5 w-5 accent-[#e0b03a]"
+        />
+        Mostrar FPS
+      </label>
+      <label className="flex items-center gap-2 py-1 text-[13px]">
+        <input
+          type="checkbox"
+          checked={showLog}
+          onChange={(e) => setShowLog(e.target.checked)}
+          className="h-5 w-5 accent-[#e0b03a]"
+          data-testid="toggle-log"
+        />
+        Mostrar mensagens do jogo
+      </label>
+      <h3 className="mb-1 mt-3 text-[13px] text-gold">Ajudas automáticas</h3>
+      <AutoOptions />
+      <h3 className="mb-1 mt-3 text-[13px] text-gold">Tipo de mundo</h3>
+      <WorldPvpOptions />
+      <h3 className="mb-1 mt-3 text-[13px] text-gold">Modo guerra</h3>
+      <WarOptions />
+      <h3 className="mb-1 mt-3 text-[13px] text-gold">Controles</h3>
+      <div className="flex flex-wrap gap-2">
+        <PixelButton onClick={() => session.setPanel('hotbar')} data-testid="settings-hotbar">
+          Configurar atalhos
+        </PixelButton>
+        <PixelButton onClick={() => session.setPanel('help')}>Como jogar</PixelButton>
+      </div>
+      <h3 className="mb-1 mt-3 text-[13px] text-gold">Progresso</h3>
+      <p className="text-[12px] text-muted">
+        O jogo salva automaticamente neste navegador (ao subir de nível, trocar equipamento, negociar e a cada
+        1 min).
+        {lastSaved ? ` Último salvamento: ${new Date(lastSaved).toLocaleTimeString()}.` : ''}
+      </p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        <PixelButton variant="gold" disabled={saving} onClick={() => void session.saveNow()}>
+          {saving ? 'Salvando…' : 'Salvar agora'}
+        </PixelButton>
+        <PixelButton onClick={() => void session.exitToMenu()}>Salvar e sair</PixelButton>
+      </div>
+      <p className="mt-3 text-[11px] text-muted" data-testid="settings-version">
+        Versão do jogo: {__APP_VERSION__}
+      </p>
+    </Panel>
+  );
+}
+
+function Check({
+  label,
+  checked,
+  onChange,
+  testId,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  testId: string;
+}) {
+  return (
+    <label className="flex items-center gap-2 py-1 text-[13px]">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="h-5 w-5 accent-[#e0b03a]"
+        data-testid={testId}
+      />
+      {label}
+    </label>
+  );
+}
+
+function AutoOptions() {
+  const session = useSession();
+  const druid = useSnap((s) => s.player.vocation) === 'druid';
+  const [a, setA] = useState(session.getAuto());
+  const set = (patch: Partial<typeof a>) => {
+    session.setAuto(patch);
+    setA(session.getAuto());
+  };
+  const bar = (
+    key: 'hpBelow' | 'manaBelow' | 'healBelow' | 'groupBelow',
+    label: string,
+    min = 0.1,
+    max = 0.95,
+  ) => (
+    <Slider label={label} value={a[key]} onChange={(v) => set({ [key]: Math.max(min, Math.min(max, v)) })} />
+  );
+  return (
+    <div data-testid="auto-options">
+      <Check
+        label="Pegar o loot ao alcance sozinho"
+        checked={a.autoLoot}
+        onChange={(v) => set({ autoLoot: v })}
+        testId="auto-loot"
+      />
+      <Check
+        label="Cura automática"
+        checked={a.autoHeal}
+        onChange={(v) => set({ autoHeal: v })}
+        testId="auto-heal"
+      />
+      {a.autoHeal && (
+        <div className="ml-4 border-l-2 border-dusk pl-3" data-testid="auto-heal-options">
+          <Check
+            label="Usar Poção de Cura"
+            checked={a.potionHp}
+            onChange={(v) => set({ potionHp: v })}
+            testId="auto-potion-hp"
+          />
+          {a.potionHp && bar('hpBelow', 'Vida abaixo de')}
+          <Check
+            label="Usar Poção de Mana"
+            checked={a.potionMana}
+            onChange={(v) => set({ potionMana: v })}
+            testId="auto-potion-mana"
+          />
+          {a.potionMana && bar('manaBelow', 'Mana abaixo de')}
+          <Check
+            label="Usar Magia de Cura"
+            checked={a.spellHeal}
+            onChange={(v) => set({ spellHeal: v })}
+            testId="auto-spell-heal"
+          />
+          {a.spellHeal && bar('healBelow', 'Vida abaixo de')}
+          {druid && (
+            <>
+              <Check
+                label="Curar grupo (Cura Intensa)"
+                checked={a.healGroup}
+                onChange={(v) => set({ healGroup: v })}
+                testId="auto-heal-group"
+              />
+              {a.healGroup && bar('groupBelow', 'Alguém abaixo de')}
+            </>
+          )}
+          {(a.potionHp || a.potionMana) && (
+            <div className="flex flex-wrap items-center gap-2 py-1 text-[13px]">
+              <span className="w-20 shrink-0">Poção</span>
+              {(
+                [
+                  ['fit', 'Que se ajusta'],
+                  ['small', 'Menor primeiro'],
+                  ['large', 'Maior primeiro'],
+                ] as const
+              ).map(([v, l]) => (
+                <PixelButton
+                  key={v}
+                  variant={a.prefer === v ? 'gold' : 'stone'}
+                  onClick={() => set({ prefer: v })}
+                >
+                  {l}
+                </PixelButton>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Tipo de mundo: sem PvP, PvP (com caveiras) ou PvP Enforced (todos se matam sem caveira). */
+function WorldPvpOptions() {
+  const session = useSession();
+  const mode = useSnap((s) => s.worldPvp);
+  const options = [
+    ['off', 'Sem PvP'],
+    ['pvp', 'PvP'],
+    ['enforced', 'PvP Enforced'],
+  ] as const;
+  return (
+    <div data-testid="world-pvp-options">
+      <div className="flex flex-wrap gap-2 py-1">
+        {options.map(([v, l]) => (
+          <PixelButton
+            key={v}
+            variant={mode === v ? 'gold' : 'stone'}
+            onClick={() => mode !== v && session.setWorldPvp(v)}
+            data-testid={`world-pvp-${v}`}
+          >
+            {l}
+          </PixelButton>
+        ))}
+      </div>
+      <p className="text-[12px] text-muted">
+        {mode === 'off'
+          ? 'Ninguém ataca outros personagens.'
+          : mode === 'pvp'
+            ? 'Ataques entre personagens fora das áreas protegidas, com caveiras, PZ lock e morte injusta (3 em 24 h dão caveira vermelha).'
+            : 'Todos podem se matar fora das áreas protegidas, sem caveira nem morte injusta. Fica só o PZ lock de combate; as perdas normais da morte continuam.'}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Modo guerra: desligado, cada um por si ou duas guildas sorteadas. Os heróis passam a caçar uns aos outros (e você),
+ * em grupo ou sozinhos, pesando a força de cada lado. Sem caveira; morrer derruba a mochila como no PK.
+ */
+function WarOptions() {
+  const session = useSession();
+  const war = useSnap((s) => s.war);
+  const options = [
+    ['off', 'Desligado'],
+    ['ffa', 'Cada um por si'],
+    ['guilds', 'Guildas'],
+  ] as const;
+  return (
+    <div data-testid="war-options">
+      <div className="flex flex-wrap gap-2 py-1">
+        {options.map(([v, l]) => (
+          <PixelButton
+            key={v}
+            variant={war.mode === v ? 'gold' : 'stone'}
+            onClick={() => war.mode !== v && session.setWar(v)}
+            data-testid={`war-${v}`}
+          >
+            {l}
+          </PixelButton>
+        ))}
+      </div>
+      <p className="text-[12px] text-muted">
+        {war.mode === 'off'
+          ? 'Ligado, os personagens continuam caçando mas buscam briga: atacam em grupo ou sozinhos, evitam quem é forte demais e fogem quando estão perdendo. Caveiras, PZ lock e perdas na morte valem como no PK.'
+          : war.mode === 'ffa'
+            ? 'Cada um por si: só o grupo é aliado. Os heróis formam grupos de 2 a 4 ou vão sozinhos — e podem trair o grupo. O seu grupo fica como está.'
+            : 'Red contra Blue, equilibradas em número e nível. Cada guilda é um grupo fixo: ninguém entra nem sai. Escolher de novo sorteia de novo.'}
+      </p>
+      {war.mode === 'guilds' && (
+        <div className="mt-1 grid grid-cols-2 gap-2" data-testid="war-guild-lists">
+          {war.guilds.map((g, i) => (
+            <div key={g.name} className="border-2 border-dusk p-1 text-[12px]">
+              <div className={i === war.mine ? 'text-heal' : 'text-hp-light'}>
+                {g.name} ({g.members.length}){i === war.mine ? ' · sua' : ''}
+              </div>
+              {g.members.map((m) => (
+                <div key={m.id} className={m.me ? 'text-gold-light' : 'text-parchment'}>
+                  {m.name} · nv {m.level}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function HelpPanel({ onClose, touch }: { onClose: () => void; touch: boolean }) {
+  const line = (k: string, v: string) => (
+    <div className="flex gap-3 border-b border-dusk py-[3px] text-[13px]">
+      <span className="w-32 shrink-0 text-gold-light">{k}</span>
+      <span className="text-parchment">{v}</span>
+    </div>
+  );
+  return (
+    <Panel title="Controles" onClose={onClose} icon="ui_hand">
+      <h3 className="mb-1 text-[13px] text-gold">Toque</h3>
+      {line('Andar', 'Arraste no lado esquerdo (joystick) ou toque no chão')}
+      {line('Alvo', 'Toque no monstro ou no botão Atacar')}
+      {line('Atalhos 1–9', 'Teclado 3×3 ao lado do Atacar (1 2 3 / 4 5 6 / 7 8 9)')}
+      {line('Conversar / loot', 'Toque no NPC ou no saco, ou no botão de ação')}
+      <h3 className="mb-1 mt-3 text-[13px] text-gold">Teclado e mouse</h3>
+      {line('WASD / setas', 'Andar (8 direções)')}
+      {line('Clique', 'Andar até o ponto, selecionar alvo, falar com NPC')}
+      {line('Tab / Espaço', 'Selecionar o próximo alvo')}
+      {line('1 – 9', 'Atalhos da barra (a mesma ordem do celular)')}
+      {line('Q · R', 'Poção de vida · poção de mana')}
+      {line('E / Enter', 'Interagir')}
+      {line('I · C · K', 'Mochila · Personagem · Grimório')}
+      {line('Esc', 'Fechar janelas / menu')}
+      {!touch && (
+        <p className="mt-2 text-[12px] text-muted">
+          Dica: o ataque básico é automático enquanto o alvo estiver ao alcance da sua arma.
+        </p>
+      )}
+    </Panel>
+  );
+}

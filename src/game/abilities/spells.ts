@@ -1,0 +1,339 @@
+// Conjuração de magias: valida requisitos, consome mana/munição, inicia cooldowns, treina Magic Level
+// e aplica o efeito pelas regras centrais. Os efeitos visuais são apenas consequência do evento spellCast.
+import type { SpellDef } from '../../domain/entities/definitions';
+import { chebyshev, type TilePos } from '../../domain/value-objects/position';
+import { remaining, SPELL_GROUP_KEY, spellGroup, startCooldown } from '../../domain/rules/cooldowns';
+import { mitigate, rollRange, spellRange } from '../../domain/rules/damage';
+import { castFailMessage, spellCooldownKey, spellManaCost, validateCast } from '../../domain/rules/spells';
+import { isPz, isSolid } from '../world/GameMap';
+import type { MonsterEntity } from '../entities/types';
+import type { World } from '../simulation/World';
+import type { PlayerEntity } from '../entities/types';
+import { allActors, asActor, message, warnThrottled } from '../simulation/World';
+import {
+  actorSource,
+  aggro,
+  currentActorTarget,
+  currentTarget,
+  damageMonster,
+  damagePlayer,
+  hasLineOfSight,
+  selectedActor,
+  setTarget,
+  targetNearest,
+} from '../combat/combat';
+import { actorById, canAttackActor, partyOf, registerAggression } from '../social/social';
+import { refreshStats, trainPlayerSkill } from '../progression/progression';
+import { addItem, canFit } from '../../domain/rules/inventory';
+
+/** Exaustão do grupo da magia (ataque, cura ou suporte) que ainda falta. */
+function groupRemaining(w: World, spell: SpellDef): number {
+  return remaining(w.player.cooldowns, SPELL_GROUP_KEY[spellGroup(spell)], w.now);
+}
+
+export function spellCooldownRemaining(w: World, spellId: string): number {
+  const spell = w.data.spells[spellId];
+  return Math.max(
+    remaining(w.player.cooldowns, spell ? spellCooldownKey(spell) : `spell:${spellId}`, w.now),
+    spell ? groupRemaining(w, spell) : 0,
+  );
+}
+
+/** Contexto de validação a partir do estado atual (também usado pela interface para mostrar disponibilidade). */
+export function castCheck(w: World, spell: SpellDef) {
+  const p = w.player;
+  const c = p.character;
+  const t = currentTarget(w) ?? currentActorTarget(w);
+  return validateCast(spell, {
+    vocation: c.vocation,
+    level: c.level,
+    magicLevel: p.stats.magicLevel,
+    mana: c.mana,
+    dead: p.dead,
+    cooldownRemaining: remaining(p.cooldowns, spellCooldownKey(spell), w.now),
+    globalCooldownRemaining: groupRemaining(w, spell),
+    inProtectionZone: isPz(w.map, p.x, p.y),
+    target: t
+      ? {
+          exists: true,
+          alive: t.kind === 'monster' ? t.alive : !t.dead,
+          hostile: t.kind === 'monster' || !canAttackActor(w, p, t),
+          distance: chebyshev(p, t),
+          lineOfSight: hasLineOfSight(w, p, t),
+        }
+      : null,
+    // sem arma nas mãos (perdeu tudo numa morte de caveira vermelha) as magias valem do mesmo jeito
+    weaponKind: p.stats.weapon.kind,
+    unarmed: !c.equipment.mainHand,
+  });
+}
+
+function areaTiles(w: World, center: TilePos, radius: number): TilePos[] {
+  const out: TilePos[] = [];
+  for (let dy = -radius; dy <= radius; dy++)
+    for (let dx = -radius; dx <= radius; dx++) {
+      if (Math.hypot(dx, dy) > radius + 0.5) continue;
+      const x = center.x + dx;
+      const y = center.y + dy;
+      if (isSolid(w.map, x, y) && !(dx === 0 && dy === 0)) continue;
+      if (!hasLineOfSight(w, center, { x, y })) continue;
+      out.push({ x, y });
+    }
+  return out;
+}
+
+/** Alcance (tiles) do que o jogador enxerga na tela: além disso o alvo conta como "fora da tela". */
+export const SCREEN_RANGE = 9;
+
+export function castSpell(w: World, spellId: string): boolean {
+  const spell = w.data.spells[spellId];
+  if (!spell) return false;
+  const p = w.player;
+  const c = p.character;
+  // magia ofensiva com alvo e sem alvo selecionado: mira automaticamente o inimigo mais próximo
+  // (golpes corpo a corpo também: mira o mais próximo por perto e o golpe sai ao chegar nele)
+  // Alvo morto, sumido ou fora da tela (ex.: segurando o botão da magia): passa para o inimigo mais próximo.
+  // Toda magia de ataque também é o "botão de ataque": mira (como acima) e começa o ataque básico, mesmo que a magia
+  // não saia (sem mana, em recarga ou ainda bloqueada) — as de área em volta dele também miram o mais próximo.
+  // (a área em volta só mira pelo jogador humano: a IA dos heróis escolhe o alvo dela)
+  const offensive = spell.effect === 'damage' && !p.dead && (spell.target !== 'areaSelf' || p === w.human);
+  if (offensive) {
+    // personagem selecionado no botão de seleção: a magia vai nele
+    const sel = selectedActor(w);
+    if (sel && p.targetId !== sel.id) setTarget(w, sel.id);
+    const cur = currentTarget(w) ?? currentActorTarget(w);
+    const offScreen = !!cur && chebyshev(p, cur) > SCREEN_RANGE;
+    if (!cur || offScreen) {
+      if (offScreen) setTarget(w, null);
+      targetNearest(w, Math.max(spell.range, SCREEN_RANGE));
+    }
+  }
+  const check = castCheck(w, spell);
+  if (!check.ok && check.reason === 'outOfRange') {
+    // fica na fila: é lançada assim que o alvo entrar no alcance (seguindo o alvo)
+    p.queuedSpell = { id: spell.id, until: w.now + 4000 };
+    warnThrottled(w, `queue:${spell.id}`, `${spell.name}: assim que o alvo estiver ao alcance.`, 2000);
+    return false;
+  }
+  if (!check.ok) {
+    warnThrottled(w, `cast:${check.reason}`, castFailMessage(check.reason, check.detail), 600);
+    if (offensive && p.targetId) p.chasePaused = false; // a magia não saiu, mas o ataque básico segue no alvo
+    return false;
+  }
+  const voc = w.data.vocations[c.vocation];
+  p.queuedSpell = null;
+  if (spell.conjure) {
+    // magia de criação: precisa caber na mochila (senão não gasta a mana)
+    if (!canFit(w.data, c.inventory, spell.conjure.itemId, spell.conjure.count)) {
+      warnThrottled(w, 'conjure:full', 'Mochila cheia: não há espaço para a poção.', 1500);
+      return false;
+    }
+    addItem(w.data, c.inventory, spell.conjure.itemId, spell.conjure.count);
+    message(
+      w,
+      `${spell.name}: ${w.data.items[spell.conjure.itemId]?.name ?? spell.conjure.itemId} criada.`,
+      'loot',
+    );
+    w.events.emit('itemsChanged', {});
+  }
+  // custo, cooldowns e treino de Magic Level (mana gasta)
+  const cost = spellManaCost(spell, c.level);
+  c.mana -= cost;
+  startCooldown(p.cooldowns, spellCooldownKey(spell), w.now, spell.cooldownMs);
+  const combatCfg = w.data.balance.combat;
+  const group = spellGroup(spell);
+  startCooldown(
+    p.cooldowns,
+    SPELL_GROUP_KEY[group],
+    w.now,
+    group === 'attack'
+      ? combatCfg.attackExhaustMs
+      : group === 'heal'
+        ? combatCfg.healExhaustMs
+        : combatCfg.globalSpellCooldownMs,
+  );
+  trainPlayerSkill(w, 'magic', cost);
+  if (spell.cancelSlow) {
+    p.slowUntil = 0;
+    p.slowFactor = 1;
+  }
+
+  const target = currentTarget(w);
+  const actorTarget = target ? null : currentActorTarget(w);
+  let tiles: TilePos[] = [];
+  let victims: MonsterEntity[] = [];
+  if (spell.target === 'target' && target) {
+    tiles = [{ x: target.x, y: target.y }];
+    victims = [target];
+  } else if (spell.target === 'areaTarget' && (target || actorTarget)) {
+    tiles = areaTiles(w, (target ?? actorTarget)!, spell.radius ?? 1);
+    victims = monstersOn(w, tiles);
+  } else if (spell.target === 'target' && actorTarget) {
+    tiles = [{ x: actorTarget.x, y: actorTarget.y }];
+  } else if (spell.target === 'areaSelf') {
+    tiles = areaTiles(w, p, spell.radius ?? 1).filter((t) => t.x !== p.x || t.y !== p.y);
+    victims = monstersOn(w, tiles);
+  } else {
+    tiles = [{ x: p.x, y: p.y }];
+  }
+  const aim = target ?? actorTarget;
+  if (aim && (spell.target === 'target' || spell.target === 'areaTarget')) {
+    p.facing =
+      Math.abs(aim.x - p.x) >= Math.abs(aim.y - p.y)
+        ? aim.x < p.x
+          ? 'left'
+          : 'right'
+        : aim.y < p.y
+          ? 'up'
+          : 'down';
+  }
+  w.events.emit('spellCast', {
+    casterId: p.id,
+    spellId: spell.id,
+    words: spell.words,
+    from: { x: p.x, y: p.y },
+    targetId: aim?.id ?? null,
+    tiles,
+  });
+
+  if (spell.effect === 'damage' && victims.length) p.lastAttackAt = w.now;
+  if (spell.effect === 'damage' && spell.formula) {
+    const power =
+      spell.formula.kind === 'magic'
+        ? p.stats.magicLevel
+        : spell.formula.kind === 'distance'
+          ? p.stats.skills.distance
+          : p.stats.skills[p.stats.weapon.skill === 'magic' ? 'club' : p.stats.weapon.skill];
+    const mod =
+      spell.formula.kind === 'magic'
+        ? voc.damage.magic
+        : spell.formula.kind === 'distance'
+          ? voc.damage.distance
+          : voc.damage.melee;
+    const wand = p.stats.weapon.kind === 'wand' ? p.stats.weapon.damage : undefined;
+    const range = spellRange(
+      spell.formula,
+      {
+        level: c.level,
+        power,
+        weaponAttack: p.stats.weapon.attack,
+        wandPower: wand ? (wand[0] + wand[1]) / 2 : 0,
+      },
+      mod,
+    );
+    for (const m of victims) {
+      const raw = rollRange(range, w.rng);
+      const res = mitigate(raw, spell.element, { armor: m.def.armor, resistances: m.def.resistances }, w.rng);
+      if (spell.slow) {
+        m.slowUntil = w.now + spell.slow.durationMs;
+        m.slowFactor = spell.slow.factor;
+      }
+      damageMonster(w, m, res.damage, spell.element, p.id);
+      // golpe em área com isca: o monstro atingido vira as costas para quem atacava e persegue o conjurador
+      aggro(w, m, spell.attract ? p.id : undefined);
+    }
+    // PK: o personagem mirado e, em magias de área, todos os atacáveis dentro dela também são atingidos
+    // (a lentidão da magia vale para jogadores e personagens humanos, como para as criaturas)
+    const inArea = (a: PlayerEntity) => tiles.some((t) => t.x === a.x && t.y === a.y);
+    const hitActors =
+      spell.target === 'target'
+        ? actorTarget && inArea(actorTarget)
+          ? [actorTarget]
+          : []
+        : allActors(w).filter((a) => a.id !== p.id && !a.dead && inArea(a));
+    for (const a of hitActors) {
+      if (canAttackActor(w, p, a)) continue;
+      registerAggression(w, p.id, a.id);
+      const raw = rollRange(range, w.rng);
+      const src = actorSource(p);
+      asActor(w, a, () => damagePlayer(w, raw, spell.element, src));
+      if (spell.slow) {
+        a.slowUntil = w.now + spell.slow.durationMs;
+        a.slowFactor = spell.slow.factor;
+      }
+    }
+  } else if (spell.effect === 'heal' && spell.formula) {
+    const range = spellRange(
+      spell.formula,
+      { level: c.level, power: p.stats.magicLevel, weaponAttack: 0 },
+      voc.damage.healing,
+    );
+    const amount = rollRange(range, w.rng);
+    const before = c.health;
+    c.health = Math.min(p.stats.maxHealth, c.health + amount);
+    w.events.emit('heal', {
+      targetId: p.id,
+      amount: c.health - before,
+      mana: false,
+      position: { x: p.x, y: p.y },
+    });
+    // em grupo: cura (e abençoa) os membros por perto
+    if (spell.partyRadius) {
+      for (const id of partyOf(w, p.id)?.members ?? []) {
+        if (id === p.id) continue;
+        const m = actorById(w, id);
+        if (!m || m.dead || chebyshev(m, p) > spell.partyRadius) continue;
+        const healed = rollRange(range, w.rng);
+        asActor(w, m, () => {
+          const b0 = m.character.health;
+          m.character.health = Math.min(m.stats.maxHealth, m.character.health + healed);
+          w.events.emit('heal', {
+            targetId: m.id,
+            amount: m.character.health - b0,
+            mana: false,
+            position: { x: m.x, y: m.y },
+          });
+          if (spell.buff) {
+            m.buffs = m.buffs.filter((b) => b.kind !== spell.buff!.kind);
+            m.buffs.push({
+              kind: spell.buff.kind,
+              value: spell.buff.value,
+              expiresAt: w.now + spell.buff.durationMs,
+              sourceSpell: spell.id,
+            });
+            refreshStats(w);
+            w.events.emit('buffApplied', {
+              targetId: m.id,
+              kind: spell.buff.kind,
+              durationMs: spell.buff.durationMs,
+            });
+          }
+        });
+      }
+    }
+  }
+  if (spell.buff) {
+    p.buffs = p.buffs.filter((b) => b.kind !== spell.buff!.kind);
+    p.buffs.push({
+      kind: spell.buff.kind,
+      value: spell.buff.value,
+      expiresAt: w.now + spell.buff.durationMs,
+      sourceSpell: spell.id,
+    });
+    refreshStats(w);
+    w.events.emit('buffApplied', {
+      targetId: p.id,
+      kind: spell.buff.kind,
+      durationMs: spell.buff.durationMs,
+    });
+  }
+  return true;
+}
+
+function monstersOn(w: World, tiles: TilePos[]): MonsterEntity[] {
+  const set = new Set(tiles.map((t) => t.y * w.map.width + t.x));
+  return [...w.monsters.values()].filter((m) => m.alive && set.has(m.y * w.map.width + m.x));
+}
+
+/** Magia na fila (alvo fora do alcance): lança quando der, ou desiste depois de alguns segundos. */
+export function updateQueuedSpell(w: World): void {
+  const p = w.player;
+  const q = p.queuedSpell;
+  if (!q) return;
+  const spell = w.data.spells[q.id];
+  if (!spell || w.now > q.until || p.dead || (!currentTarget(w) && !currentActorTarget(w))) {
+    p.queuedSpell = null;
+    return;
+  }
+  if (castCheck(w, spell).ok) castSpell(w, q.id);
+}

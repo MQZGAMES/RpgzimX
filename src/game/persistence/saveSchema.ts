@@ -1,0 +1,203 @@
+// Formato de save versionado, com validação defensiva e migrações.
+// Saves locais NÃO são protegidos contra adulteração; a validação apenas impede dados corrompidos de quebrar o jogo.
+import type { CharacterState, ItemStack } from '../../domain/entities/character';
+import { EQUIP_SLOTS, SKILL_IDS, type EquipSlot } from '../../domain/entities/definitions';
+import type { GameData } from '../../domain/entities/gameData';
+import { normalizeHotbar, normalizeHotbarSets } from '../../domain/rules/hotbar';
+import { SEASON, isOldSeason, seasonReset } from '../../domain/rules/season';
+import { WORLD_VERSION } from '../../domain/rules/worldVersion';
+import { addItem } from '../../domain/rules/inventory';
+import { fixMageWeapon } from '../../domain/rules/equipment';
+import { isVocationId } from '../../domain/value-objects/ids';
+import { MAX_LEVEL, levelForXp } from '../../domain/rules/experience';
+import { sanitizeName } from '../../domain/rules/character';
+
+export const SAVE_VERSION = 3;
+
+export interface SaveFile {
+  version: number;
+  savedAt: number;
+  character: CharacterState;
+  /** Só na leitura: o save era de uma temporada anterior e o personagem recomeçou (não é gravado). */
+  reset?: boolean;
+}
+
+export class SaveValidationError extends Error {}
+
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+const num = (v: unknown, fallback: number, min = -Infinity, max = Infinity): number =>
+  typeof v === 'number' && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback;
+
+/** Migrações por versão: cada função converte da versão N para N+1. */
+const MIGRATIONS: Record<number, (raw: Record<string, unknown>) => Record<string, unknown>> = {
+  // v1 não tinha hotbar nem estatísticas
+  1: (raw) => {
+    const c = isObj(raw.character) ? { ...raw.character } : {};
+    if (!Array.isArray(c.hotbar)) c.hotbar = [];
+    if (!isObj(c.stats)) c.stats = { monstersKilled: 0, deaths: 0, playTimeMs: 0 };
+    return { ...raw, version: 2, character: c };
+  },
+  // v2 não tinha banco/depósito
+  2: (raw) => {
+    const c = isObj(raw.character) ? { ...raw.character } : {};
+    if (!Array.isArray(c.depot)) c.depot = [];
+    if (typeof c.bankGold !== 'number') c.bankGold = 0;
+    return { ...raw, version: 3, character: c };
+  },
+};
+
+export function migrate(raw: unknown): Record<string, unknown> {
+  if (!isObj(raw)) throw new SaveValidationError('Save inválido.');
+  let cur = raw;
+  let v = num(cur.version, 0);
+  if (v < 1 || v > SAVE_VERSION) throw new SaveValidationError(`Versão de save não suportada: ${String(cur.version)}`);
+  while (v < SAVE_VERSION) {
+    const m = MIGRATIONS[v];
+    if (!m) throw new SaveValidationError(`Sem migração a partir da versão ${v}`);
+    cur = m(cur);
+    v = num(cur.version, v + 1);
+  }
+  return cur;
+}
+
+function validStack(data: GameData, v: unknown): ItemStack | null {
+  if (!isObj(v) || typeof v.itemId !== 'string' || !data.items[v.itemId]) return null;
+  const def = data.items[v.itemId]!;
+  const max = def.stackable ? (def.maxStack ?? 100) : 1;
+  const count = Math.floor(num(v.count, 1, 1, max));
+  return { itemId: v.itemId, count, ...(v.sellLocked === true ? { sellLocked: true } : {}) };
+}
+
+/**
+ * Converte dados desconhecidos (de armazenamento) em um CharacterState consistente, ou lança erro. Save de uma
+ * temporada anterior volta ao nível 1 com o kit básico, em `start` (o ponto de partida do mapa).
+ */
+export function parseSave(data: GameData, raw: unknown, start?: { x: number; y: number }): SaveFile {
+  const file = migrate(raw);
+  const c = file.character;
+  if (!isObj(c)) throw new SaveValidationError('Personagem ausente no save.');
+  if (typeof c.id !== 'string' || !c.id) throw new SaveValidationError('Id de personagem inválido.');
+  if (!isVocationId(c.vocation)) throw new SaveValidationError('Vocação inválida.');
+  const name = sanitizeName(typeof c.name === 'string' ? c.name : '');
+  if (name.length < 3) throw new SaveValidationError('Nome inválido.');
+  const experience = Math.floor(num(c.experience, 0, 0, 1e12));
+  // o nível é sempre coerente com a experiência (a penalidade de morte nunca cruza o piso do nível)
+  const level = Math.min(MAX_LEVEL, levelForXp(experience, data.balance.experience));
+  const skillsRaw = isObj(c.skills) ? c.skills : {};
+  const skills = {} as CharacterState['skills'];
+  for (const s of SKILL_IDS) {
+    const r = skillsRaw[s];
+    const base = s === 'magic' ? 0 : data.balance.skills.startLevel;
+    skills[s] = {
+      level: Math.floor(num(isObj(r) ? r.level : undefined, base, base, 200)),
+      tries: num(isObj(r) ? r.tries : undefined, 0, 0, 1e9),
+    };
+  }
+  const slots = data.balance.player.inventorySlots;
+  const invRaw = Array.isArray(c.inventory) ? c.inventory : [];
+  const inventory: (ItemStack | null)[] = new Array(slots).fill(null);
+  for (let i = 0; i < Math.min(slots, invRaw.length); i++) inventory[i] = validStack(data, invRaw[i]);
+  const depotSlots = data.balance.player.depotSlots;
+  const depotRaw = Array.isArray(c.depot) ? c.depot : [];
+  const depot: (ItemStack | null)[] = new Array(depotSlots).fill(null);
+  for (let i = 0; i < Math.min(depotSlots, depotRaw.length); i++) depot[i] = validStack(data, depotRaw[i]);
+  const equipment: CharacterState['equipment'] = {};
+  const eqRaw = isObj(c.equipment) ? c.equipment : {};
+  for (const slot of EQUIP_SLOTS as readonly EquipSlot[]) {
+    const st = validStack(data, eqRaw[slot]);
+    if (st && data.items[st.itemId]!.slot === slot) equipment[slot] = st;
+  }
+  // migração: o slot de munição foi removido; as flechas equipadas voltam para a mochila
+  const legacyAmmo = validStack(data, eqRaw.ammo);
+  if (legacyAmmo) addItem(data, inventory, legacyAmmo.itemId, legacyAmmo.count);
+  const pos = isObj(c.position) ? c.position : {};
+  const statsRaw = isObj(c.stats) ? c.stats : {};
+  const flagsRaw = isObj(c.flags) ? c.flags : {};
+  const flags: Record<string, boolean> = {};
+  for (const [k, v] of Object.entries(flagsRaw)) if (typeof v === 'boolean') flags[k] = v;
+  // Legacy type-wide locks retain one protected copy, preferring the equipped item.
+  for (const key of Object.keys(flags)) {
+    if (!key.startsWith('lock:')) continue;
+    if (flags[key]) {
+      const item = [...Object.values(equipment), ...inventory, ...depot].find(
+        (st) => st?.itemId === key.slice(5),
+      );
+      if (item) item.sellLocked = true;
+    }
+    delete flags[key];
+  }
+  const hotbar = normalizeHotbar(data, c.vocation, Array.isArray(c.hotbar) ? c.hotbar : []);
+  const character: CharacterState = {
+    id: c.id,
+    name,
+    vocation: c.vocation,
+    level,
+    experience,
+    health: num(c.health, 1, 0, 1e6),
+    mana: num(c.mana, 0, 0, 1e6),
+    skills,
+    inventory,
+    equipment,
+    gold: Math.floor(num(c.gold, 0, 0, 1e9)),
+    depot,
+    bankGold: Math.floor(num(c.bankGold, 0, 0, 1e9)),
+    position: { x: Math.floor(num(pos.x, 0, 0, 10000)), y: Math.floor(num(pos.y, 0, 0, 10000)) },
+    facing: c.facing === 'up' || c.facing === 'left' || c.facing === 'right' ? c.facing : 'down',
+    hotbar,
+    ...normalizeHotbarSets(data, c.vocation, hotbar, c.hotbarSets, c.hotbarSet),
+    flags,
+    pk: parsePk(c.pk),
+    stats: {
+      monstersKilled: Math.floor(num(statsRaw.monstersKilled, 0, 0, 1e9)),
+      deaths: Math.floor(num(statsRaw.deaths, 0, 0, 1e9)),
+      playTimeMs: num(statsRaw.playTimeMs, 0, 0, 1e13),
+    },
+    createdAt: num(c.createdAt, Date.now()),
+    updatedAt: num(c.updatedAt, Date.now()),
+    ...(isObj(c.settings) ? { settings: parseSettings(c.settings) } : {}),
+  };
+  // magos só com varinha: arma errada sai do slot e entra a varinha/cajado do nível
+  fixMageWeapon(data, character);
+  if (isOldSeason({ season: typeof c.season === 'number' ? c.season : undefined })) {
+    const fresh = seasonReset(data, character, start ?? character.position, Date.now());
+    return { version: SAVE_VERSION, savedAt: Date.now(), character: fresh, reset: true };
+  }
+  character.season = typeof c.season === 'number' ? c.season : SEASON;
+  // mapa novo: a posição salva no mapa antigo não vale mais — volta ao templo, com tudo o mais intacto
+  if (!(typeof c.world === 'number' && c.world >= WORLD_VERSION) && start) character.position = { ...start };
+  character.world = WORLD_VERSION;
+  return { version: SAVE_VERSION, savedAt: num(file.savedAt, Date.now()), character };
+}
+
+/** Configurações individuais: só grupos conhecidos e valores simples (texto curto, número finito, sim/não). */
+function parseSettings(raw: Record<string, unknown>): NonNullable<CharacterState['settings']> {
+  const out: NonNullable<CharacterState['settings']> = {};
+  for (const group of ['auto', 'party'] as const) {
+    const g = raw[group];
+    if (!isObj(g)) continue;
+    const vals: Record<string, string | number | boolean> = {};
+    for (const [k, v] of Object.entries(g))
+      if (typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v)) || (typeof v === 'string' && v.length <= 24))
+        vals[k] = v;
+    out[group] = vals;
+  }
+  return out;
+}
+
+function parsePk(raw: unknown): CharacterState['pk'] {
+  if (!isObj(raw)) return undefined;
+  const skull = raw.skull === 'white' || raw.skull === 'yellow' || raw.skull === 'red' ? raw.skull : null;
+  const times = Array.isArray(raw.unjust)
+    ? raw.unjust.filter((t): t is number => typeof t === 'number' && Number.isFinite(t)).slice(-10)
+    : [];
+  return {
+    skull,
+    skullUntil: num(raw.skullUntil, 0, 0, 1e15),
+    pzLockUntil: num(raw.pzLockUntil, 0, 0, 1e15),
+    unjust: times,
+  };
+}
+
+export function toSaveFile(character: CharacterState): SaveFile {
+  return { version: SAVE_VERSION, savedAt: Date.now(), character: structuredClone(character) };
+}
