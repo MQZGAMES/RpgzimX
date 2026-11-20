@@ -28,7 +28,7 @@ export function InstallHint() {
       {open && (
         <Panel title="Instalar no iPhone" onClose={() => setOpen(false)} icon="ui_star">
           <div className="space-y-3 text-[14px] leading-snug" data-testid="install-ios">
-            <p>O Rpgzim vira um app na sua tela de início: abre em tela cheia, sem a barra do navegador, e funciona mesmo sem internet depois da primeira vez.</p>
+            <p>O RPGZIMX vira um app na sua tela de início: abre em tela cheia, sem a barra do navegador, e funciona mesmo sem internet depois da primeira vez.</p>
             <ol className="list-decimal space-y-2 pl-5">
               <li>
                 Abra esta página no <b>Safari</b>.

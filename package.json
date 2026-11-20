@@ -1,9 +1,9 @@
 {
-  "name": "rpgzim",
+  "name": "rpgzimx",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Rpgzim - RPG 2D top-down de fantasia medieval, mobile-first, para navegador (Phaser 3 + React + TypeScript, pixel art própria gerada por código)",
+  "description": "RPGZIMX - RPG 2D de fantasia medieval para navegador com controle Xbox",
   "scripts": {
     "dev": "vite --port 5190",
     "host": "vite --host --port 5190",

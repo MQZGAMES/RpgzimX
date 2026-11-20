@@ -10,7 +10,7 @@ export function useCloud(): CloudState {
   return useSyncExternalStore(cloud.subscribe, cloud.get);
 }
 
-const NEW_REPO_URL = `https://github.com/new?name=${DEFAULT_SAVE_REPO}&visibility=private&description=${encodeURIComponent('Saves do Rpgzim')}`;
+const NEW_REPO_URL = `https://github.com/new?name=${DEFAULT_SAVE_REPO}&visibility=private&description=${encodeURIComponent('Saves do RPGZIMX')}`;
 const NEW_TOKEN_URL = 'https://github.com/settings/personal-access-tokens/new';
 
 function timeAgo(t: number | null): string {

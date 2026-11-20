@@ -13,7 +13,7 @@ import { execSync } from 'node:child_process';
 function precacheServiceWorker(): Plugin {
   let outDir = 'dist';
   return {
-    name: 'rpgzim-precache',
+    name: 'rpgzimx-precache',
     apply: 'build',
     configResolved(c) {
       outDir = c.build.outDir;
@@ -32,13 +32,13 @@ function precacheServiceWorker(): Plugin {
       const swPath = join(outDir, 'sw.js');
       const sw = readFileSync(swPath, 'utf8')
         .replace('/*__PRECACHE__*/ []', JSON.stringify(list))
-        .replace("'rpgzim-dev'", `'rpgzim-${Date.now().toString(36)}'`);
+        .replace("'rpgzimx-dev'", `'rpgzimx-${Date.now().toString(36)}'`);
       writeFileSync(swPath, sw);
     },
   };
 }
 
-// base relativo: o build funciona tanto na raiz quanto em subpastas (ex.: GitHub Pages /Rpgzim/).
+// base relativo: o build funciona tanto na raiz quanto em subpastas (ex.: GitHub Pages /RPGZIMX/).
 /** Versão exibida no jogo: data da publicação + commit (ajuda a saber se o navegador pegou a versão nova). */
 function buildVersion(): string {
   let commit = '';

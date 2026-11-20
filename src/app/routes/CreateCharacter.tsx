@@ -1,18 +1,21 @@
+import { NameKeyboard } from '../../ui/controls/NameKeyboard';
 import { useState } from 'react';
 import { uiImage } from '../../assets';
 import { VOCATION_IDS, type VocationId } from '../../domain/value-objects/ids';
+import { playerSpellIds } from '../../domain/entities/gameData';
 import { validateName } from '../../domain/rules/character';
 import { useServices } from '../providers/services';
 import { ItemIcon, PixelButton, SpriteFrame } from '../../ui/common/primitives';
 
-export function CreateCharacter({ onBack, onCreate }: { onBack: () => void; onCreate: (name: string, vocation: VocationId) => void }) {
+export function CreateCharacter({ onBack, onCreate, xboxConnected }: { onBack: () => void; onCreate: (name: string, vocation: VocationId) => void; xboxConnected: boolean }) {
   const { data } = useServices();
   const [vocation, setVocation] = useState<VocationId>('knight');
   const [name, setName] = useState('');
   const [touched, setTouched] = useState(false);
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
   const error = validateName(name);
   const v = data.vocations[vocation];
-  const spells = v.spells.map((id) => data.spells[id]!);
+  const spells = playerSpellIds(data, vocation).map((id) => data.spells[id]!);
 
   return (
     <div className="fixed inset-0 overflow-y-auto bg-ink">
@@ -35,6 +38,7 @@ export function CreateCharacter({ onBack, onCreate }: { onBack: () => void; onCr
                 onClick={() => setVocation(id)}
                 className={`${active ? 'frame-parchment' : 'frame-dark'} flex flex-col items-center !border-[12px] transition-transform ${active ? 'scale-[1.02]' : 'opacity-85'}`}
                 data-testid={`voc-${id}`}
+                data-xbox-first={active ? '' : undefined}
               >
                 <SpriteFrame sheet={voc.sprite} scale={3} walk={active} />
                 <span className={`mt-1 text-lg ${active ? 'text-[#5a2e1a]' : 'text-gold-light'}`}>{voc.name}</span>
@@ -90,15 +94,18 @@ export function CreateCharacter({ onBack, onCreate }: { onBack: () => void; onCr
               placeholder="Ex.: Aria"
               className="frame-slot !border-[6px] bg-transparent px-1 py-1 text-base text-parchment outline-none placeholder:text-muted"
               data-testid="name-input"
+              data-xbox-activate={xboxConnected ? '[data-testid="xbox-name-keyboard"]' : undefined}
               autoComplete="off"
             />
             {touched && error && <span className="text-[12px] text-hp-light">{error}</span>}
           </label>
-          <PixelButton type="submit" variant="gold" className="px-2 py-1 text-base" ariaLabel="Começar aventura">
+          {xboxConnected && <PixelButton data-testid="xbox-name-keyboard" onClick={() => setKeyboardOpen(true)}>Digitar com controle</PixelButton>}
+          <PixelButton type="submit"  variant="gold" className="px-2 py-1 text-base" ariaLabel="Começar aventura">
             Começar aventura
           </PixelButton>
         </form>
       </div>
+      {keyboardOpen && <NameKeyboard value={name} onChange={setName} onClose={() => setKeyboardOpen(false)} />}
     </div>
   );
 }

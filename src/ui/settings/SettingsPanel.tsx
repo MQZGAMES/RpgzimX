@@ -107,6 +107,9 @@ export function SettingsPanel({
         <PixelButton onClick={() => session.setPanel('hotbar')} data-testid="settings-hotbar">
           Configurar atalhos
         </PixelButton>
+        <PixelButton onClick={() => session.setPanel('xbox')} data-testid="settings-xbox">
+          Controle Xbox
+        </PixelButton>
         <PixelButton onClick={() => session.setPanel('help')}>Como jogar</PixelButton>
       </div>
       <h3 className="mb-1 mt-3 text-[13px] text-gold">Progresso</h3>
@@ -339,7 +342,13 @@ export function HelpPanel({ onClose, touch }: { onClose: () => void; touch: bool
   );
   return (
     <Panel title="Controles" onClose={onClose} icon="ui_hand">
-      <h3 className="mb-1 text-[13px] text-gold">Toque</h3>
+      <h3 className="mb-1 text-[13px] text-gold">Xbox</h3>
+      {line('A · X · B · Y', 'Ação / ataque · magias de 2, 4 e 6 segundos')}
+      {line('RB · LB', 'Selecionar monstros · selecionar jogadores')}
+      {line('RT · LT', 'Poção de vida · poção de mana')}
+      {line('Analógico · ↑↓←→', 'Andar · abrir mapa, mochila, personagem ou jogadores')}
+      {line('A · B nos menus', 'Confirmar · voltar')}
+      <h3 className="mb-1 mt-3 text-[13px] text-gold">Toque</h3>
       {line('Andar', 'Arraste no lado esquerdo (joystick) ou toque no chão')}
       {line('Alvo', 'Toque no monstro ou no botão Atacar')}
       {line('Atalhos 1–9', 'Teclado 3×3 ao lado do Atacar (1 2 3 / 4 5 6 / 7 8 9)')}

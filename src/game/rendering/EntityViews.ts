@@ -345,7 +345,7 @@ export class EntityViews {
       }
       v.sync(m, now, true, m.def.speed);
       v.setLabelVisible(true);
-      v.setHealthBar(m.hp / m.def.health, this.scene, m.id === targetId ? 0xff6a5a : 0x4fd08a);
+      v.setHealthBar(m.hp / m.def.health, this.scene, m.id === targetId ? 0xff6a5a : m.id === w.ui.selectedMonster ? 0xffb347 : 0x4fd08a);
     }
     for (const n of w.npcs.values()) {
       const v = this.npcs.get(n.id)!;

@@ -3,7 +3,7 @@
 import { GitHubClient, GitHubError } from './GitHubClient';
 import { GitHubSaveRepository } from './GitHubSaveRepository';
 
-export const DEFAULT_SAVE_REPO = 'rpgzim-saves';
+export const DEFAULT_SAVE_REPO = 'rpgzimx-saves';
 
 export interface GitHubAccount {
   token: string;
@@ -44,5 +44,5 @@ export async function connectGitHubAccount(token: string, repoName: string, fetc
 }
 
 export function remoteRepositoryFor<T>(account: GitHubAccount, fetchFn?: typeof fetch): GitHubSaveRepository<T> {
-  return new GitHubSaveRepository<T>(new GitHubClient(account.token, fetchFn), account.repo);
+  return new GitHubSaveRepository<T>(new GitHubClient(account.token, fetchFn), account.repo, 'rpgzimx-saves');
 }

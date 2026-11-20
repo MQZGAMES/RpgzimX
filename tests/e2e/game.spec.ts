@@ -65,7 +65,7 @@ test.beforeEach(async ({ page }) => {
   await page.evaluate(async () => {
     localStorage.clear();
     await new Promise<void>((res) => {
-      const r = indexedDB.deleteDatabase('rpgzim');
+      const r = indexedDB.deleteDatabase('rpgzimx');
       r.onsuccess = r.onerror = r.onblocked = () => res();
     });
   });
@@ -92,7 +92,7 @@ test('fluxo principal: mover, lutar, magia, loot, equipar, salvar e recarregar',
     .not.toBeNull();
   // o alvo aparece só no mapa (anel + barra vermelha): sem caixa extra cobrindo a tela
   await expect(page.getByTestId('target-frame')).toHaveCount(0);
-  // magia pela barra de atalhos (tecla 1 = Golpe Brutal)
+  // magia pela barra de atalhos (tecla 1 = Raio Rápido)
   const manaBefore = (await api(page, (a) => a.player())).mana;
   await page.keyboard.press('Digit1');
   await expect
@@ -218,7 +218,7 @@ test('mobile: joystick move o personagem e o HUD cabe na tela', async ({ page },
   await api(page, (a) => a.teleport(216, 158));
   await api(page, (a) => a.teleportNear('slime', 2));
   const mana = (await api(page, (a) => a.player())).mana;
-  await page.getByTestId('spell-arcane_bolt').tap();
+  await page.getByTestId('spell-swift_bolt').tap();
   await expect.poll(async () => (await api(page, (a) => a.player())).target).not.toBeNull();
   await expect.poll(async () => (await api(page, (a) => a.player())).mana).toBeLessThan(mana);
 });
@@ -576,7 +576,7 @@ test('mobile: atalho segurado repete e PARA ao soltar; vãos entre atalhos não 
   expect(gaps.corner).toBe(true);
 
   // 2) segurar o atalho da magia repete a cada recarga; soltar encerra (nada dispara depois)
-  const box = (await page.getByTestId('spell-earth_thorn').boundingBox())!;
+  const box = (await page.getByTestId('spell-swift_bolt').boundingBox())!;
   const cx = box.x + box.width / 2;
   const cy = box.y + box.height / 2;
   const cdp = await page.context().newCDPSession(page);

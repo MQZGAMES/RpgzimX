@@ -9,6 +9,8 @@ import { TitleScreen } from './routes/TitleScreen';
 import { CreateCharacter } from './routes/CreateCharacter';
 import { GameScreen } from './routes/GameScreen';
 import { loadRosterFor } from './heroes';
+import { loadXboxBindings, saveXboxBindings, type XboxBindings } from '../game/input/xbox';
+import { useXboxInput } from '../ui/controls/useXboxInput';
 import { onlinePrefs } from '../integration/game-ui-bridge/GameSession';
 
 type Screen = { kind: 'title' } | { kind: 'create' } | { kind: 'game'; character: CharacterState; heroes: CharacterState[]; offline: CharacterState[] } | { kind: 'error'; message: string };
@@ -21,6 +23,17 @@ function Screens() {
   const { data, saves, audio } = useServices();
   const [screen, setScreen] = useState<Screen>({ kind: 'title' });
   const toTitle = useCallback(() => setScreen({ kind: 'title' }), []);
+  const [bindings, setBindings] = useState(loadXboxBindings);
+  const changeBindings = (next: XboxBindings) => {
+    setBindings(next);
+    saveXboxBindings(next);
+  };
+  const connected = useXboxInput({
+    audio,
+    bindings,
+    menuScreen: screen.kind !== 'game',
+    onBack: screen.kind === 'create' || screen.kind === 'error' ? toTitle : undefined,
+  });
 
   const create = async (name: string, vocation: VocationId) => {
     audio.unlock();
@@ -51,11 +64,11 @@ function Screens() {
 
   switch (screen.kind) {
     case 'title':
-      return <TitleScreen onNew={() => setScreen({ kind: 'create' })} onLoad={(id) => void load(id)} />;
+      return <TitleScreen xboxConnected={connected} onNew={() => setScreen({ kind: 'create' })} onLoad={(id) => void load(id)} />;
     case 'create':
-      return <CreateCharacter onBack={toTitle} onCreate={(n, v) => void create(n, v)} />;
+      return <CreateCharacter xboxConnected={connected} onBack={toTitle} onCreate={(n, v) => void create(n, v)} />;
     case 'game':
-      return <GameScreen key={screen.character.id} character={screen.character} heroes={screen.heroes} offline={screen.offline} onExit={toTitle} />;
+      return <GameScreen key={screen.character.id} character={screen.character} heroes={screen.heroes} offline={screen.offline} onExit={toTitle} bindings={bindings} onBindingsChange={changeBindings} />;
     case 'error':
       return (
         <div className="fixed inset-0 flex items-center justify-center p-4">

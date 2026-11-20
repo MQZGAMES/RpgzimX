@@ -12,7 +12,10 @@ import { MapInputLayer } from '../../ui/controls/MapInput';
 import { installDebugApi } from '../debugApi';
 import { resetViewportZoom } from '../preventZoom';
 
-const PREF_KEY = 'rpgzim:prefs';
+import type { XboxBindings } from '../../game/input/xbox';
+import { useXboxInput } from '../../ui/controls/useXboxInput';
+
+const PREF_KEY = 'rpgzimx:prefs';
 function loadPrefs(): { zoomBias: number; showFps: boolean; showLog: boolean } {
   try {
     return { zoomBias: 0, showFps: false, showLog: true, ...(JSON.parse(localStorage.getItem(PREF_KEY) ?? '{}') as object) };
@@ -26,11 +29,15 @@ export function GameScreen({
   heroes = [],
   offline = [],
   onExit,
+  bindings,
+  onBindingsChange,
 }: {
   character: CharacterState;
   heroes?: CharacterState[];
   offline?: CharacterState[];
   onExit: () => void;
+  bindings: XboxBindings;
+  onBindingsChange: (bindings: XboxBindings) => void;
 }) {
   const services = useServices();
   const host = useRef<HTMLDivElement>(null);
@@ -39,6 +46,7 @@ export function GameScreen({
   exitRef.current = onExit;
   const [session, setSession] = useState<GameSession | null>(null);
   const [prefs, setPrefs] = useState(loadPrefs);
+  const xboxConnected = useXboxInput({ session: session ?? undefined, audio: services.audio, bindings });
 
   useEffect(() => {
     if (!host.current) return;
@@ -85,6 +93,9 @@ export function GameScreen({
         <SessionContext.Provider value={session}>
           <MapInputLayer />
           <Hud
+            xboxConnected={xboxConnected}
+            bindings={bindings}
+            onBindingsChange={onBindingsChange}
             zoomBias={prefs.zoomBias}
             setZoomBias={(zoomBias) => setPrefs((p) => ({ ...p, zoomBias }))}
             showFps={prefs.showFps}

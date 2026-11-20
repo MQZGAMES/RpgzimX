@@ -21,7 +21,7 @@ export async function ensureHeroSaves(saves: SaveService, data: GameData): Promi
     }
   }
   // os personagens da casa só são criados uma vez por temporada: se o jogador apagar um, ele não volta
-  const seededKey = `rpgzim.heroesSeeded.${SEASON}`;
+  const seededKey = `rpgzimx.heroesSeeded.${SEASON}`;
   try {
     if (localStorage.getItem(seededKey)) return reset;
     localStorage.setItem(seededKey, '1');

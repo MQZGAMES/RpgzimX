@@ -4,15 +4,11 @@
 import type { SaveRepository, SaveSlotSummary } from '../../../domain/repositories/SaveRepository';
 import { GitHubError, type GitHubClient } from './GitHubClient';
 
-const DIR = 'saves';
-
 interface RemoteSave<T> {
   slotId: string;
   summary: SaveSlotSummary;
   data: T;
 }
-
-const fileOf = (slotId: string) => `${DIR}/${slotId.replace(/[^\w-]/g, '_')}.json`;
 
 export class GitHubSaveRepository<T> implements SaveRepository<T> {
   private readonly shas = new Map<string, string>();
@@ -21,10 +17,15 @@ export class GitHubSaveRepository<T> implements SaveRepository<T> {
     private readonly client: GitHubClient,
     /** "dono/repositorio" */
     readonly fullName: string,
+    private readonly directory = 'saves',
   ) {}
 
+  private fileOf(slotId: string): string {
+    return `${this.directory}/${slotId.replace(/[^\w-]/g, '_')}.json`;
+  }
+
   async list(): Promise<SaveSlotSummary[]> {
-    const files = (await this.client.listDir(this.fullName, DIR)).filter((f) => f.name.endsWith('.json'));
+    const files = (await this.client.listDir(this.fullName, this.directory)).filter((f) => f.name.endsWith('.json'));
     const all = await Promise.all(
       files.map(async (f) => {
         const file = await this.client.getFile(this.fullName, f.path);
@@ -42,7 +43,7 @@ export class GitHubSaveRepository<T> implements SaveRepository<T> {
   }
 
   async load(slotId: string): Promise<T | null> {
-    const file = await this.client.getFile(this.fullName, fileOf(slotId));
+    const file = await this.client.getFile(this.fullName, this.fileOf(slotId));
     if (!file) return null;
     this.shas.set(slotId, file.sha);
     return (JSON.parse(file.text) as RemoteSave<T>).data;
@@ -51,21 +52,21 @@ export class GitHubSaveRepository<T> implements SaveRepository<T> {
   async save(slotId: string, data: T, summary: SaveSlotSummary, keepalive = false): Promise<void> {
     const text = JSON.stringify({ slotId, summary, data } satisfies RemoteSave<T>, null, 1);
     const msg = `Save: ${summary.name} (nível ${summary.level})`;
-    const put = (sha: string | undefined) => this.client.putFile(this.fullName, fileOf(slotId), text, sha, msg, keepalive);
+    const put = (sha: string | undefined) => this.client.putFile(this.fullName, this.fileOf(slotId), text, sha, msg, keepalive);
     try {
       this.shas.set(slotId, await put(this.shas.get(slotId)));
     } catch (e) {
       // 409/422: sha desatualizado ou ausente (arquivo criado em outro aparelho) -> busca o atual e repete
       if (!(e instanceof GitHubError) || (e.status !== 409 && e.status !== 422)) throw e;
-      const cur = await this.client.getFile(this.fullName, fileOf(slotId));
+      const cur = await this.client.getFile(this.fullName, this.fileOf(slotId));
       this.shas.set(slotId, await put(cur?.sha));
     }
   }
 
   async remove(slotId: string): Promise<void> {
-    const cur = await this.client.getFile(this.fullName, fileOf(slotId));
+    const cur = await this.client.getFile(this.fullName, this.fileOf(slotId));
     if (!cur) return;
-    await this.client.deleteFile(this.fullName, fileOf(slotId), cur.sha, `Apaga personagem ${slotId}`);
+    await this.client.deleteFile(this.fullName, this.fileOf(slotId), cur.sha, `Apaga personagem ${slotId}`);
     this.shas.delete(slotId);
   }
 }

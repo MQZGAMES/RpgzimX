@@ -1,7 +1,7 @@
 // Implementações do contrato SaveRepository: IndexedDB (padrão), localStorage (alternativa) e memória (testes).
 import type { SaveRepository, SaveSlotSummary } from '../../domain/repositories/SaveRepository';
 
-const DB_NAME = 'rpgzim';
+const DB_NAME = 'rpgzimx';
 const DB_VERSION = 1;
 const STORE_SAVES = 'saves';
 const STORE_META = 'meta';
@@ -77,7 +77,7 @@ export class IndexedDbSaveRepository<T> implements SaveRepository<T> {
 }
 
 export class LocalStorageSaveRepository<T> implements SaveRepository<T> {
-  private readonly prefix = 'rpgzim:save:';
+  private readonly prefix = 'rpgzimx:save:';
   constructor(private readonly storage: Storage = localStorage) {}
 
   async list(): Promise<SaveSlotSummary[]> {
@@ -138,8 +138,8 @@ export async function createBrowserRepository<T>(): Promise<SaveRepository<T>> {
   }
   try {
     if (typeof localStorage !== 'undefined') {
-      localStorage.setItem('rpgzim:probe', '1');
-      localStorage.removeItem('rpgzim:probe');
+      localStorage.setItem('rpgzimx:probe', '1');
+      localStorage.removeItem('rpgzimx:probe');
       return new LocalStorageSaveRepository<T>();
     }
   } catch {

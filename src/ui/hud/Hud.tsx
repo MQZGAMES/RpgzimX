@@ -13,10 +13,13 @@ import { MarketPanel } from '../market/MarketPanel';
 import { HelpPanel, SettingsPanel } from '../settings/SettingsPanel';
 import { BuffBar, StatusPanel } from './StatusPanel';
 import { ActorMenu, GoingTo, HudButton as MenuButton, InvitePrompt, PartyPanel, PkBadge, QuickToggles } from './Social';
+import { XboxActionBar } from './XboxActionBar';
+import { XboxSettings } from '../settings/XboxSettings';
+import type { XboxBindings } from '../../game/input/xbox';
 import { DesktopActionBar, TouchActions } from './ActionControls';
 import { DeathOverlay, FpsCounter, LevelUpToast, MessageLog, PkToast, RegionBanner } from './Overlays';
 
-export function Hud({ zoomBias, setZoomBias, showFps, setShowFps, showLog, setShowLog }: { zoomBias: number; setZoomBias: (v: number) => void; showFps: boolean; setShowFps: (v: boolean) => void; showLog: boolean; setShowLog: (v: boolean) => void }) {
+export function Hud({ zoomBias, setZoomBias, showFps, setShowFps, showLog, setShowLog, xboxConnected, bindings, onBindingsChange }: { xboxConnected: boolean; bindings: XboxBindings; onBindingsChange: (bindings: XboxBindings) => void; zoomBias: number; setZoomBias: (v: number) => void; showFps: boolean; setShowFps: (v: boolean) => void; showLog: boolean; setShowLog: (v: boolean) => void }) {
   const session = useSession();
   const panel = useLocal((s) => s.panel);
   const touch = useLocal((s) => s.touch);
@@ -60,7 +63,7 @@ export function Hud({ zoomBias, setZoomBias, showFps, setShowFps, showLog, setSh
           <MessageLog max={touch ? 5 : 7} />
         </div>
       )}
-      {touch ? <TouchActions /> : <DesktopActionBar />}
+      {xboxConnected ? <XboxActionBar bindings={bindings} /> : touch ? <TouchActions /> : <DesktopActionBar />}
       <RegionBanner />
       <LevelUpToast />
       <PkToast />
@@ -77,6 +80,7 @@ export function Hud({ zoomBias, setZoomBias, showFps, setShowFps, showLog, setSh
       {panel === 'minimap' && <MinimapPanel onClose={close} />}
       {panel === 'players' && <PlayersPanel onClose={close} />}
       {panel === 'settings' && <SettingsPanel onClose={close} zoomBias={zoomBias} setZoomBias={setZoomBias} showFps={showFps} setShowFps={setShowFps} showLog={showLog} setShowLog={setShowLog} />}
+      {panel === 'xbox' && <XboxSettings bindings={bindings} onChange={onBindingsChange} onClose={() => session.setPanel('settings')} connected={xboxConnected} />}
       {panel === 'help' && <HelpPanel onClose={close} touch={touch} />}
       <PartyPanel />
       <DeathOverlay />

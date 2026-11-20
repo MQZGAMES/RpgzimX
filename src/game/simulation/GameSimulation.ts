@@ -1,3 +1,4 @@
+import { hasPlayerSpell } from '../../domain/entities/gameData';
 import type { SellLockTarget } from '../../domain/rules/economy';
 // Orquestrador da simulação. Recebe comandos de entrada (de qualquer fonte: teclado, toque, testes,
 // futuramente rede), avança o mundo com passos de tempo limitados e publica eventos tipados.
@@ -1083,6 +1084,10 @@ export class GameSimulation {
   }
   /** Vincula uma magia, item ou poção automática a um atalho (se já estava em outro, troca de lugar). */
   setHotbar(index: number, entry: HotbarEntry): void {
+    if (entry?.kind === 'spell') {
+      const spell = this.world.data.spells[entry.id];
+      if (!spell || !hasPlayerSpell(this.world.data, spell)) return;
+    }
     const c = this.world.player.character;
     if (c.hotbar.length !== HOTBAR_SIZE) c.hotbar = normalizeHotbar(this.world.data, c.vocation, c.hotbar);
     assignHotbar(c.hotbar, index, entry);

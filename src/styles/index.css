@@ -243,3 +243,9 @@
     --hud-zoom: 1.4;
   }
 }
+
+.xbox-ui :is(button, a, input, select, textarea, [tabindex]):focus {
+  outline: 2px solid #ffe284;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px #140d1b;
+}

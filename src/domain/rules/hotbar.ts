@@ -1,7 +1,7 @@
 // Atalhos personalizáveis (barra de ações): cada posição guarda uma magia, um item usável da mochila
 // ou uma "poção automática" (escolhe a poção certa para o que falta). Gravado como texto no personagem
 // ("spell:id", "item:id", "potion:health"), compatível com saves antigos (só ids de magia).
-import type { GameData } from '../entities/gameData';
+import { hasPlayerSpell, playerSpellIds, type GameData } from '../entities/gameData';
 import type { VocationId } from '../value-objects/ids';
 import { currentSpellId } from './spells';
 
@@ -29,7 +29,7 @@ export function encodeHotbarEntry(e: HotbarEntry): string {
 
 /** Atalhos padrão: as magias da vocação e as duas poções automáticas. */
 export function defaultHotbar(data: GameData, vocation: VocationId): string[] {
-  const spells = data.vocations[vocation].spells.slice(0, HOTBAR_SIZE - 2).map((id) => `spell:${id}`);
+  const spells = playerSpellIds(data, vocation).slice(0, HOTBAR_SIZE - 2).map((id) => `spell:${id}`);
   while (spells.length < HOTBAR_SIZE - 2) spells.push('');
   return [...spells, 'potion:health', 'potion:mana'];
 }
@@ -43,7 +43,7 @@ function migrate(data: GameData, e: HotbarEntry): HotbarEntry {
 
 function valid(data: GameData, vocation: VocationId, e: HotbarEntry): boolean {
   if (!e) return false;
-  if (e.kind === 'spell') return !!data.spells[e.id] && data.spells[e.id]!.vocations.includes(vocation);
+  if (e.kind === 'spell') return !!data.spells[e.id] && hasPlayerSpell(data, data.spells[e.id]!) && data.spells[e.id]!.vocations.includes(vocation);
   if (e.kind === 'item') return !!data.items[e.id]?.use;
   return true;
 }
@@ -67,7 +67,7 @@ export function normalizeHotbar(data: GameData, vocation: VocationId, raw: reado
   const grown = legacy ? LEGACY_SIZE : list.length;
   if (grown < HOTBAR_SIZE) {
     const have = new Set(out);
-    const fresh = data.vocations[vocation].spells.filter((id) => !have.has(`spell:${id}`));
+    const fresh = playerSpellIds(data, vocation).filter((id) => !have.has(`spell:${id}`));
     for (let i = grown; i < HOTBAR_SIZE && fresh.length; i++) if (!out[i]) out[i] = `spell:${fresh.shift()}`;
   }
   return out;

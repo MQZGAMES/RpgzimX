@@ -1,4 +1,3 @@
-import { SPELLS } from '../../data/spells';
 import { spellDetails } from '../../domain/rules/spellDetails';
 import { useSession, useSnap } from '../../integration/game-ui-bridge/hooks';
 import { ItemIcon, Panel, PixelButton } from '../common/primitives';
@@ -41,7 +40,7 @@ export function SpellBookPanel({ onClose }: { onClose: () => void }) {
               </div>
               <div className="text-[12px] leading-snug text-parchment">{s.description}</div>
               <div className="mt-2 space-y-1 text-[12px] text-parchment">
-                {spellDetails(SPELLS[s.id]!).map((line) => (
+                {spellDetails(session.sim.world.data.spells[s.id]!).map((line) => (
                   <p key={line}>{line}</p>
                 ))}
               </div>

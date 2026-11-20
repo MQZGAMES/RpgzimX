@@ -2,6 +2,7 @@
 // Usa o Chrome instalado no sistema por padrão (PW_CHANNEL=msedge para o Edge, ou "chromium" se baixado).
 import { defineConfig, devices } from '@playwright/test';
 
+const externalBase = process.env.RPGZIMX_BASE_URL;
 const channel = process.env.PW_CHANNEL ?? 'chrome';
 const launchOptions = { args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--autoplay-policy=no-user-gesture-required'] };
 
@@ -13,11 +14,11 @@ export default defineConfig({
   workers: 1,
   reporter: [['list'], ['html', { open: 'never' }]],
   use: {
-    baseURL: 'http://localhost:4190/',
+    baseURL: externalBase ?? 'http://localhost:4190/',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },
-  webServer: {
+  webServer: externalBase ? undefined : {
     command: 'npx vite preview --port 4190 --strictPort',
     url: 'http://localhost:4190/',
     reuseExistingServer: true,

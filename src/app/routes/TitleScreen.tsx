@@ -16,7 +16,7 @@ const fmtSaved = (at: number) =>
     ? new Date(at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
     : '';
 
-export function TitleScreen({ onNew, onLoad }: { onNew: () => void; onLoad: (slotId: string) => void }) {
+export function TitleScreen({ onNew, onLoad, xboxConnected }: { onNew: () => void; onLoad: (slotId: string) => void; xboxConnected: boolean }) {
   const { saves, data, audio, seasonReset } = useServices();
   const [seasonSeen, setSeasonSeen] = useState(false);
   const [slots, setSlots] = useState<SaveSlotSummary[] | null>(null);
@@ -50,7 +50,7 @@ export function TitleScreen({ onNew, onLoad }: { onNew: () => void; onLoad: (slo
       <div className="fixed inset-0 bg-gradient-to-b from-black/10 via-black/20 to-black/70" />
       <div className="safe-top safe-bottom safe-x relative mx-auto flex min-h-full max-w-[520px] flex-col items-center justify-between gap-6 py-6">
         <div className="mt-[6vh] text-center">
-          <h1 className="font-pixel text-outline text-6xl tracking-wide text-gold-light drop-shadow-[0_4px_0_#33121f] sm:text-7xl">Rpgzim</h1>
+          <h1 className="font-pixel text-outline text-6xl tracking-wide text-gold-light drop-shadow-[0_4px_0_#33121f] sm:text-7xl">RPGZIMX</h1>
           <p className="text-outline mt-2 text-[15px] text-parchment">Crônicas de Pedraluz</p>
         </div>
         {seasonReset > 0 && !seasonSeen && (
@@ -110,6 +110,7 @@ export function TitleScreen({ onNew, onLoad }: { onNew: () => void; onLoad: (slo
                           onClick={() => onLoad(s.slotId)}
                           className="btn-gold flex min-h-[36px] min-w-0 flex-1 items-center gap-2 !py-0 text-left"
                           data-testid={`slot-${s.slotId}`}
+                          data-xbox-first={s.slotId === shown[0]?.slotId ? '' : undefined}
                         >
                           <span className="min-w-0 flex-1 truncate text-[14px]">{s.name}</span>
                           <span className="shrink-0 text-[11px] text-parchment">
@@ -140,7 +141,7 @@ export function TitleScreen({ onNew, onLoad }: { onNew: () => void; onLoad: (slo
                   </div>
                 </div>
               )}
-              <PixelButton variant={slots.length ? 'stone' : 'gold'} className="w-full py-1 text-base" onClick={onNew}>
+              <PixelButton variant={slots.length ? 'stone' : 'gold'} className="w-full py-1 text-base" onClick={onNew} data-testid="new-character">
                 Novo personagem
               </PixelButton>
               {error && <p className="mt-2 text-[12px] text-hp-light">{error}</p>}
@@ -152,7 +153,9 @@ export function TitleScreen({ onNew, onLoad }: { onNew: () => void; onLoad: (slo
         <p className="text-outline text-center text-[11px] text-muted">
           RPG de fantasia em pixel art · {account ? `progresso sincronizado com o GitHub (${account.repo})` : 'progresso salvo neste navegador'}
           <br />
-          Melhor no celular deitado ou em pé · teclado, mouse e toque
+          <span data-testid="xbox-title-status">
+            {xboxConnected ? 'Xbox conectado · direcional para navegar · A confirma' : 'Xbox: conecte e pressione um botão · teclado, mouse e toque'}
+          </span>
           <br />
           <span className="text-[10px] opacity-70" data-testid="app-version">versão {__APP_VERSION__}</span>
         </p>

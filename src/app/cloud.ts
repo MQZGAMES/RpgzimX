@@ -4,7 +4,7 @@ import { connectGitHubAccount, remoteRepositoryFor, type GitHubAccount } from '.
 import type { SyncedSaveRepository, SyncStatus } from '../game/persistence/SyncedSaveRepository';
 import type { SaveFile } from '../game/persistence/saveSchema';
 
-const KEY = 'rpgzim:github';
+const KEY = 'rpgzimx:github';
 
 function readStored(): GitHubAccount | null {
   try {

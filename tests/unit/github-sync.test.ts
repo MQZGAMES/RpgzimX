@@ -110,8 +110,8 @@ describe('conectar conta', () => {
   it('cria o repositório privado quando o token pode', async () => {
     const gh = fakeGitHub({ repos: {}, canCreate: true });
     const acc = await connectGitHubAccount('tok', '', gh.fetchFn);
-    expect(acc.repo).toBe('ana/rpgzim-saves');
-    expect(gh.repos.get('ana/rpgzim-saves')?.private).toBe(true);
+    expect(acc.repo).toBe('ana/rpgzimx-saves');
+    expect(gh.repos.get('ana/rpgzimx-saves')?.private).toBe(true);
   });
 });
 

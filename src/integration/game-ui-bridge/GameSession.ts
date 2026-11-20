@@ -21,6 +21,9 @@ import type { VocationId } from '../../domain/value-objects/ids';
 /** Máximo de personagens salvos (o mesmo da tela inicial). */
 import type { CatalogItem } from '../../domain/rules/marketCatalog';
 import type { HeroDef } from '../../domain/entities/definitions';
+import { currentActorTarget, currentTarget, nearbyMonsters, selectedActor, targetNearest } from '../../game/combat/combat';
+import { chebyshev } from '../../domain/value-objects/position';
+import { SCREEN_RANGE } from '../../game/abilities/spells';
 import { canDrink } from '../../domain/rules/potions';
 
 /** Herói fixo do jogo (Boladex, Maguim...) ou um personagem criado pelo jogador jogando com a IA. */
@@ -49,10 +52,10 @@ export interface SessionOptions {
   onExit: () => void;
 }
 
-const AUTO_KEY = 'rpgzim:auto';
-const MARKET_KEY = 'rpgzim:market';
+const AUTO_KEY = 'rpgzimx:auto';
+const MARKET_KEY = 'rpgzimx:market';
 /** Quem o jogador deixou logado/deslogado (id do personagem -> logado?). Sem registro, todos entram logados. */
-export const ONLINE_KEY = 'rpgzim:online';
+export const ONLINE_KEY = 'rpgzimx:online';
 
 /** Preferência de login com IA salva neste aparelho. */
 export function onlinePrefs(): Record<string, boolean> {
@@ -422,6 +425,11 @@ export class GameSession {
     this.sim.setPaused(false);
     this.audio.play('ui');
   }
+  hasOverlay(): boolean {
+    const local = this.local.get();
+    const ui = this.sim.world.ui;
+    return !!(local.panel || local.partyPanel || local.actorMenu || ui.dialog || ui.shop || ui.depot || ui.market || ui.lootId);
+  }
   closeOverlays(): boolean {
     const w = this.sim.world;
     if (this.local.get().panel) {
@@ -658,7 +666,20 @@ export class GameSession {
     this.dirty = true;
     this.saves.requestSave(() => this.sim.snapshotCharacter());
   }
+  private manualMove = { x: 0, y: 0 };
+  private controllerMove = { x: 0, y: 0 };
+
   move(x: number, y: number): void {
+    this.manualMove = { x, y };
+    this.applyMove();
+  }
+  moveFromController(x: number, y: number): void {
+    if (x === this.controllerMove.x && y === this.controllerMove.y) return;
+    this.controllerMove = { x, y };
+    this.applyMove();
+  }
+  private applyMove(): void {
+    const { x, y } = this.manualMove.x || this.manualMove.y ? this.manualMove : this.controllerMove;
     this.sim.setMoveVector(x, y);
   }
   /** Usa o atalho: magia, item da mochila ou poção automática. Atalho vazio abre a configuração. */
@@ -693,8 +714,63 @@ export class GameSession {
     this.audio.play('ui');
     this.dirty = true;
   }
-  clearTarget(): void {
+  selectNearbyMonster(): void {
+    const w = this.sim.world;
+    const monsters = nearbyMonsters(w, SCREEN_RANGE);
+    const index = monsters.findIndex((m) => m.id === (w.ui.selectedMonster ?? w.human.targetId));
+    this.clearTarget();
+    w.ui.selectedMonster = monsters.length ? monsters[(index + 1) % monsters.length]!.id : null;
+    if (!w.ui.selectedMonster) this.pushMessage('Nenhum monstro visível por perto.', 'warning');
+  }
+  selectNearbyPlayer(): void {
+    const w = this.sim.world;
     this.sim.setTarget(null);
+    this.cancelQueuedSpell();
+    w.ui.selectedMonster = null;
+    this.cycleActorSelection();
+  }
+  openSelectedPlayer(): void {
+    const actor = selectedActor(this.sim.world);
+    if (actor) this.local.update({ actorMenu: actor.id });
+    else this.setPanel('players');
+  }
+  private confirmSelection(): boolean | null {
+    const w = this.sim.world;
+    const actor = selectedActor(w);
+    if (actor) {
+      this.sim.setTarget(actor.id);
+      return w.human.targetId === actor.id;
+    }
+    const monster = w.ui.selectedMonster ? w.monsters.get(w.ui.selectedMonster) : null;
+    w.ui.selectedMonster = null;
+    if (!monster?.alive || chebyshev(w.human, monster) > SCREEN_RANGE) return null;
+    this.sim.setTarget(monster.id);
+    return w.human.targetId === monster.id;
+  }
+  action(): void {
+    const w = this.sim.world;
+    if (w.human.dead || this.confirmSelection() !== null) return;
+    const target = currentTarget(w) ?? currentActorTarget(w);
+    if (target && chebyshev(w.human, target) <= SCREEN_RANGE) {
+      this.sim.setTarget(target.id);
+    } else if (this.sim.interact()) {
+      this.audio.play('ui');
+    } else if (!targetNearest(w, SCREEN_RANGE)) {
+      this.pushMessage('Nada para interagir ou atacar por perto.', 'warning');
+    }
+    this.dirty = true;
+  }
+  castControllerSpell(spellId: string): void {
+    if (this.confirmSelection() === false) return;
+    this.cast(spellId);
+  }
+  clearTarget(): void {
+    const w = this.sim.world;
+    w.ui.selectedActor = null;
+    w.ui.selectedMonster = null;
+    this.cancelQueuedSpell();
+    this.sim.setTarget(null);
+    this.dirty = true;
   }
   interact(): void {
     if (this.sim.interact()) this.audio.play('ui');

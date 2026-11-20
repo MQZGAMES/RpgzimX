@@ -14,7 +14,7 @@ export interface AudioSettings {
   muted: boolean;
 }
 
-const SETTINGS_KEY = 'rpgzim:audio';
+const SETTINGS_KEY = 'rpgzimx:audio';
 const DEFAULTS: AudioSettings = { master: 0.8, sfx: 0.8, music: 0.45, muted: false };
 
 export function loadAudioSettings(): AudioSettings {

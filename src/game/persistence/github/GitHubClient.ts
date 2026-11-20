@@ -101,7 +101,7 @@ export class GitHubClient {
       name,
       private: true,
       auto_init: true,
-      description: 'Saves do Rpgzim — Crônicas de Pedraluz (sincronização da conta)',
+      description: 'Saves do RPGZIMX — Crônicas de Pedraluz (sincronização da conta)',
     });
     return { fullName: r.full_name, private: r.private, canPush: true };
   }

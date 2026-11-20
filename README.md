@@ -1,10 +1,30 @@
-# Rpgzim — Crônicas de Pedraluz
+# RPGZIMX — Crônicas de Pedraluz
 
 RPG 2D top-down de fantasia medieval, **mobile-first**, para navegador. Mecânicas inspiradas em Tibia
 (alvo + ataque automático, skills que evoluem pelo uso, Magic Level, vocações, loot) e apresentação
 inspirada nos RPGs de GBA — com **pixel art 100% própria, gerada por código** (nenhum asset de terceiros).
 
-**Jogar:** https://mqzgames.github.io/Rpgzim/
+**Jogar:** https://mqzgames.github.io/RpgzimX/
+
+RPGZIMX é uma edição independente do RPGZIM. Personagens, mercado, preferências e atalhos têm armazenamento próprio.
+
+## Controle Xbox
+
+No Edge, conecte o controle por USB ou Bluetooth e pressione um botão. O jogo detecta o mapeamento padrão do navegador. O analógico esquerdo anda em oito direções. Nos menus, use o direcional para navegar, **A** para confirmar e **B** para voltar.
+
+| Botão | No jogo |
+| --- | --- |
+| A | Confirma o alvo e inicia ataque básico. Sem alvo, interage, abre loot ou mira o monstro visível mais próximo. |
+| X / B / Y | Raio Rápido (2 s), Impacto Rúnico (4 s) e Tempestade Arcana (6 s). |
+| RB / LB | Marca monstros / jogadores próximos sem iniciar ataque. |
+| RT / LT | Usa poção de vida / de mana. |
+| View / Menu | Mapa / menu. |
+| LS / RS | Limpa o alvo / abre as opções do jogador marcado. |
+| ↑ / ↓ / ← / → | Mapa / mochila / personagem / lista de jogadores. |
+
+As três magias ofensivas estão disponíveis desde o início em todas as vocações. A exaustão da última magia bloqueia as outras magias de ataque. Ataques básicos e poções têm seus próprios tempos. O grimório ainda oferece magia de cura e suporte.
+
+Remapeie os botões em **Menu → Controle Xbox**. Cada alteração troca os dois atalhos envolvidos. Teclado, mouse e toque também estão disponíveis. As seções de histórico abaixo documentam as versões do RPGZIM que deram origem a esta edição.
 
 **Instalar como app:** no iPhone/iPad, abra no Safari → Compartilhar → *Adicionar à Tela de Início* (a tela inicial do
 jogo mostra o passo a passo). No Android/Chrome/Edge aparece o botão *Instalar o app*. Instalado, abre em tela cheia
@@ -533,7 +553,7 @@ upgrade), treino com Espada de Treino nos slimes e ajuda ao jogador quando um mo
 
 ## Conta GitHub (sincronizar saves entre aparelhos)
 Opcional, na tela inicial: **Entrar com GitHub**. Cada jogador usa a **própria conta**: os saves ficam em
-`saves/<id>.json` num repositório **privado** dele (padrão `rpgzim-saves`), acessado direto do navegador pela API
+`rpgzimx-saves/<id>.json` num repositório **privado** dele (padrão `rpgzimx-saves`), acessado direto do navegador pela API
 do GitHub com um **token fine-grained** restrito a esse repositório (*Contents: Read and write*).
 - Local primeiro: o jogo sempre grava no navegador; a nuvem recebe no máx. 1 envio por personagem por minuto
   (cada envio é um commit; pulado se nada mudou) e sempre ao sair/fechar a aba ou trocar de app. Preparar um save

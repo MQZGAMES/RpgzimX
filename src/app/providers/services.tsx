@@ -1,6 +1,6 @@
 // Serviços da aplicação (dados, persistência, áudio) criados uma vez e compartilhados via contexto.
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-import { GAME_DATA } from '../../data';
+import { RPGZIMX_DATA } from '../../data';
 import type { GameData } from '../../domain/entities/gameData';
 import { createBrowserRepository } from '../../game/persistence/repositories';
 import { SaveService } from '../../game/persistence/SaveService';
@@ -55,11 +55,11 @@ export function ServicesProvider({ children, fallback }: { children: ReactNode; 
         // ignora carimbos de tempo: parado na cidade não gera commits a cada minuto
         (f) => JSON.stringify({ ...f.character, updatedAt: 0, stats: { ...f.character.stats, playTimeMs: 0 } }),
       );
-      const saves = new SaveService(repo, GAME_DATA, { ...PLAYER_START });
+      const saves = new SaveService(repo, RPGZIMX_DATA, { ...PLAYER_START });
       const cloud = new CloudAccount(repo);
-      const reset = await ensureHeroSaves(saves, GAME_DATA);
+      const reset = await ensureHeroSaves(saves, RPGZIMX_DATA);
       if (!alive) return;
-      setServices({ data: GAME_DATA, saves, audio: new AudioService(), touch: detectTouch(), cloud, seasonReset: reset });
+      setServices({ data: RPGZIMX_DATA, saves, audio: new AudioService(), touch: detectTouch(), cloud, seasonReset: reset });
     })();
     return () => {
       alive = false;

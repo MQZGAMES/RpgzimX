@@ -25,6 +25,7 @@ export interface UiState {
   pending: { kind: 'npc' | 'loot' | 'sign'; id: string } | null;
   /** Personagem marcado no botão de seleção: o botão de ataque e as magias de ataque vão nele. */
   selectedActor?: string | null;
+  selectedMonster?: string | null;
 }
 
 export interface World {

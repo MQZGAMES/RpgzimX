@@ -18,6 +18,7 @@ import type { MarketState } from '../../domain/rules/market';
 import { countItem } from '../../domain/rules/inventory';
 import { bestPotionFor, usablePotionCount } from '../../domain/rules/potions';
 import { isSellLocked, keptFromSellAll, sellableCount } from '../../domain/rules/economy';
+import { playerSpellIds } from '../../domain/entities/gameData';
 import { HOTBAR_SIZE, parseHotbarEntry } from '../../domain/rules/hotbar';
 import { spellManaCost } from '../../domain/rules/spells';
 import {
@@ -244,6 +245,7 @@ export interface UiSnapshot {
   standAttack: boolean;
   /** Personagem marcado no botão de seleção (o ataque vai nele). */
   selectedActor: { id: string; name: string } | null;
+  selectedMonster: string | null;
   /** "Ir até": o personagem que você está indo encontrar (e a distância). */
   goingTo: { name: string; distance: number } | null;
   /** Tempo restante da caveira do jogador (ms), 0 sem caveira. */
@@ -727,6 +729,10 @@ export function buildSnapshot(sim: GameSimulation, version: number): UiSnapshot 
       const t = sim.goToId ? w.heroes.get(sim.goToId) : undefined;
       return t ? { name: t.character.name, distance: Math.max(Math.abs(t.x - w.human.x), Math.abs(t.y - w.human.y)) } : null;
     })(),
+    selectedMonster: (() => {
+      const monster = w.ui.selectedMonster ? w.monsters.get(w.ui.selectedMonster) : null;
+      return monster?.alive ? monster.def.name : null;
+    })(),
     selectedActor: (() => {
       const a = selectedActor(w);
       return a ? { id: a.id, name: a.character.name } : null;
@@ -767,7 +773,7 @@ export function buildSnapshot(sim: GameSimulation, version: number): UiSnapshot 
     })),
     hotbar: hotbarView(sim),
     hotbarSet: c.hotbarSet ?? 0,
-    spellbook: voc.spells.map((id) => spellView(sim, id)),
+    spellbook: playerSpellIds(w.data, c.vocation).map((id) => spellView(sim, id)),
     inventory: c.inventory.map((st) => (st ? itemView(sim, st) : null)),
     equipment,
     slotLabels: SLOT_LABEL,

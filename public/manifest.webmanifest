@@ -1,8 +1,8 @@
 {
   "id": "./",
-  "name": "Rpgzim — Crônicas de Pedraluz",
-  "short_name": "Rpgzim",
-  "description": "RPG 2D de fantasia medieval em pixel art para o navegador do celular.",
+  "name": "RPGZIMX — Crônicas de Pedraluz",
+  "short_name": "RPGZIMX",
+  "description": "RPG 2D de fantasia medieval em pixel art com suporte a controle Xbox no navegador.",
   "lang": "pt-BR",
   "start_url": "./",
   "scope": "./",

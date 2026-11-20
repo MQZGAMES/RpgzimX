@@ -1,5 +1,6 @@
 // Conjuração de magias: valida requisitos, consome mana/munição, inicia cooldowns, treina Magic Level
 // e aplica o efeito pelas regras centrais. Os efeitos visuais são apenas consequência do evento spellCast.
+import { hasPlayerSpell } from '../../domain/entities/gameData';
 import type { SpellDef } from '../../domain/entities/definitions';
 import { chebyshev, type TilePos } from '../../domain/value-objects/position';
 import { remaining, SPELL_GROUP_KEY, spellGroup, startCooldown } from '../../domain/rules/cooldowns';
@@ -87,7 +88,7 @@ export const SCREEN_RANGE = 9;
 
 export function castSpell(w: World, spellId: string): boolean {
   const spell = w.data.spells[spellId];
-  if (!spell) return false;
+  if (!spell || (w.player === w.human && !hasPlayerSpell(w.data, spell))) return false;
   const p = w.player;
   const c = p.character;
   // magia ofensiva com alvo e sem alvo selecionado: mira automaticamente o inimigo mais próximo
@@ -147,7 +148,7 @@ export function castSpell(w: World, spellId: string): boolean {
     SPELL_GROUP_KEY[group],
     w.now,
     group === 'attack'
-      ? combatCfg.attackExhaustMs
+      ? (w.data.playerAttacks?.includes(spell.id) ? spell.cooldownMs : combatCfg.attackExhaustMs)
       : group === 'heal'
         ? combatCfg.healExhaustMs
         : combatCfg.globalSpellCooldownMs,
