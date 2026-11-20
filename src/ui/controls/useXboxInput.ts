@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { GameSession } from '../../integration/game-ui-bridge/GameSession';
 import type { AudioService } from '../../game/audio/AudioService';
 import { stickVector, XBOX_ACTION_IDS, xboxButtonMask, type XboxAction, type XboxBindings } from '../../game/input/xbox';
@@ -110,6 +110,11 @@ export function useXboxInput({
   onBack?: () => void;
 }): boolean {
   const [connected, setConnected] = useState(false);
+  // Preserve button history and menu focus when a binding changes.
+  const currentBindings = useRef(bindings);
+  useEffect(() => {
+    currentBindings.current = bindings;
+  }, [bindings]);
   useEffect(() => {
     if (!navigator.getGamepads || (!session && !menuScreen)) return;
     let frame = 0;
@@ -215,7 +220,7 @@ export function useXboxInput({
       else if (pressed(justPressed, 15)) session.setPanel('players');
       else {
         for (const action of XBOX_ACTION_IDS) {
-          if (pressed(justPressed, bindings[action])) perform(session, action);
+          if (pressed(justPressed, currentBindings.current[action])) perform(session, action);
           if (session.hasOverlay()) break;
         }
       }
@@ -238,6 +243,6 @@ export function useXboxInput({
       window.removeEventListener('keydown', resetFocus);
       onBlur();
     };
-  }, [session, audio, bindings, menuScreen, onBack]);
+  }, [session, audio, menuScreen, onBack]);
   return connected;
 }
