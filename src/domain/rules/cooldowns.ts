@@ -6,7 +6,7 @@ export const POTION = 'gcd:potion';
 
 /**
  * Exaustão por grupo (como no Tibia): atacar não impede curar nem beber poção, e vice-versa — cada grupo tem a sua.
- * - ataque: 2 s entre duas magias de ataque quaisquer;
+ * - ataque: intervalo definido pelo balanceamento ou pela recarga da magia;
  * - cura: 2 s entre duas magias de cura;
  * - suporte (Corrida, escudos, criação de poção...): a exaustão curta de antes, só entre elas;
  * - poções: 2 s (chave POTION, no uso do item).

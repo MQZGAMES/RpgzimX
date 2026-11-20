@@ -1,15 +1,15 @@
-import { PLAYER_ATTACK_IDS } from '../../data/playerAttacks';
+import { XBOX_SPELL_SLOTS } from '../../domain/rules/xboxSpells';
 import { XBOX_BUTTONS, type XboxAction, type XboxBindings } from '../../game/input/xbox';
 import { useSession, useSnap } from '../../integration/game-ui-bridge/hooks';
 import { ItemIcon } from '../common/primitives';
 import { SpellButton } from './SpellButton';
 
-const SPELL_SHORTCUTS = ['spell1', 'spell2', 'spell3'] as const;
 const FACE_COLORS: Record<string, string> = { A: '#8fea9a', B: '#ff9b91', X: '#86ceff', Y: '#ffe284' };
 
 export function XboxActionBar({ bindings }: { bindings: XboxBindings }) {
   const session = useSession();
   const book = useSnap((s) => s.spellbook);
+  const spells = useSnap((s) => s.xboxSpells);
   const selectedMonster = useSnap((s) => s.selectedMonster);
   const selectedActor = useSnap((s) => s.selectedActor);
   const interaction = useSnap((s) => s.interaction);
@@ -52,12 +52,12 @@ export function XboxActionBar({ bindings }: { bindings: XboxBindings }) {
           {badge('action')}
           <span className="block truncate">{selectedMonster || selectedActor ? 'Atacar' : interaction?.label ?? 'Ação'}</span>
         </button>
-        {PLAYER_ATTACK_IDS.map((id, i) => {
-          const spell = book.find((entry) => entry.id === id);
+        {XBOX_SPELL_SLOTS.map((slot, i) => {
+          const spell = book.find((entry) => entry.id === spells[i]);
           return spell && (
-            <div key={id} className="flex flex-col items-center text-[11px]">
-              {badge(SPELL_SHORTCUTS[i]!)}
-              <SpellButton spell={spell} size={40} onCast={() => session.castControllerSpell(id)} />
+            <div key={slot} className="flex flex-col items-center text-[11px]">
+              {badge(slot)}
+              <SpellButton key={spell.id} spell={spell} size={40} onCast={() => session.castControllerSpell(slot)} />
             </div>
           );
         })}

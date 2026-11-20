@@ -296,6 +296,7 @@ export interface BalanceConfig {
   combat: {
     globalSpellCooldownMs: number;
     attackExhaustMs: number;
+    attackExhaustBySpell?: boolean;
     healExhaustMs: number;
     potionCooldownMs: number;
     unarmedAttack: number;

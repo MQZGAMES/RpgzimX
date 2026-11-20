@@ -18,7 +18,7 @@ import type { MarketState } from '../../domain/rules/market';
 import { countItem } from '../../domain/rules/inventory';
 import { bestPotionFor, usablePotionCount } from '../../domain/rules/potions';
 import { isSellLocked, keptFromSellAll, sellableCount } from '../../domain/rules/economy';
-import { playerSpellIds } from '../../domain/entities/gameData';
+import { defaultXboxSpells } from '../../domain/rules/xboxSpells';
 import { HOTBAR_SIZE, parseHotbarEntry } from '../../domain/rules/hotbar';
 import { spellManaCost } from '../../domain/rules/spells';
 import {
@@ -277,6 +277,7 @@ export interface UiSnapshot {
   hotbar: HotbarSlotView[];
   /** Conjunto de favoritos de atalhos ativo (0 a 2). */
   hotbarSet: number;
+  xboxSpells: readonly string[];
   spellbook: SpellView[];
   inventory: (ItemView | null)[];
   equipment: Record<EquipSlot, ItemView | null>;
@@ -773,7 +774,8 @@ export function buildSnapshot(sim: GameSimulation, version: number): UiSnapshot 
     })),
     hotbar: hotbarView(sim),
     hotbarSet: c.hotbarSet ?? 0,
-    spellbook: playerSpellIds(w.data, c.vocation).map((id) => spellView(sim, id)),
+    xboxSpells: c.xboxSpells ?? defaultXboxSpells(w.data, c.vocation),
+    spellbook: voc.spells.map((id) => spellView(sim, id)),
     inventory: c.inventory.map((st) => (st ? itemView(sim, st) : null)),
     equipment,
     slotLabels: SLOT_LABEL,

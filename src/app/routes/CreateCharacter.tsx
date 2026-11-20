@@ -2,7 +2,6 @@ import { NameKeyboard } from '../../ui/controls/NameKeyboard';
 import { useState } from 'react';
 import { uiImage } from '../../assets';
 import { VOCATION_IDS, type VocationId } from '../../domain/value-objects/ids';
-import { playerSpellIds } from '../../domain/entities/gameData';
 import { validateName } from '../../domain/rules/character';
 import { useServices } from '../providers/services';
 import { ItemIcon, PixelButton, SpriteFrame } from '../../ui/common/primitives';
@@ -15,7 +14,7 @@ export function CreateCharacter({ onBack, onCreate, xboxConnected }: { onBack: (
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const error = validateName(name);
   const v = data.vocations[vocation];
-  const spells = playerSpellIds(data, vocation).map((id) => data.spells[id]!);
+  const spells = data.vocations[vocation].spells.map((id) => data.spells[id]!);
 
   return (
     <div className="fixed inset-0 overflow-y-auto bg-ink">

@@ -3,6 +3,7 @@ import { migrateAuto, type AutoSettings } from '../../game/ai/autoPlay';
 // Sessão de jogo: liga simulação, persistência, áudio e interface. É a camada de integração explícita
 // entre React e Phaser: o Phaser chama `frame()` a cada quadro; o React lê as stores e envia comandos.
 import { parseHotbarEntry, type HotbarEntry } from '../../domain/rules/hotbar';
+import { defaultXboxSpells, XBOX_SPELL_SLOTS, type XboxSpellSlot } from '../../domain/rules/xboxSpells';
 import type { CharacterState } from '../../domain/entities/character';
 import type { EquipSlot } from '../../domain/entities/definitions';
 import type { GameData } from '../../domain/entities/gameData';
@@ -760,9 +761,28 @@ export class GameSession {
     }
     this.dirty = true;
   }
-  castControllerSpell(spellId: string): void {
-    if (this.confirmSelection() === false) return;
-    this.cast(spellId);
+  setControllerSpell(slot: XboxSpellSlot, spellId: string): void {
+    const { data, human } = this.sim.world;
+    const c = human.character;
+    if (!data.vocations[c.vocation].spells.includes(spellId) || !data.spells[spellId]) return;
+    const spells = [...(c.xboxSpells ?? defaultXboxSpells(data, c.vocation))];
+    const index = XBOX_SPELL_SLOTS.indexOf(slot);
+    if (spells[index] === spellId) return;
+    const previous = spells.indexOf(spellId);
+    if (previous >= 0) spells[previous] = spells[index] ?? '';
+    spells[index] = spellId;
+    c.xboxSpells = spells;
+    this.dirty = true;
+    this.saves.requestSave(() => this.sim.snapshotCharacter());
+  }
+  castControllerSpell(slot: XboxSpellSlot): void {
+    const { data, human } = this.sim.world;
+    const c = human.character;
+    const spellId = (c.xboxSpells ?? defaultXboxSpells(data, c.vocation))[XBOX_SPELL_SLOTS.indexOf(slot)];
+    const spell = spellId ? data.spells[spellId] : undefined;
+    if (!spell || !spell.vocations.includes(c.vocation)) return;
+    if (spell.effect === 'damage' && this.confirmSelection() === false) return;
+    this.cast(spell.id);
   }
   clearTarget(): void {
     const w = this.sim.world;

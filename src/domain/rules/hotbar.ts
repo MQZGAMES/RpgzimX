@@ -1,7 +1,8 @@
 // Atalhos personalizáveis (barra de ações): cada posição guarda uma magia, um item usável da mochila
 // ou uma "poção automática" (escolhe a poção certa para o que falta). Gravado como texto no personagem
 // ("spell:id", "item:id", "potion:health"), compatível com saves antigos (só ids de magia).
-import { hasPlayerSpell, playerSpellIds, type GameData } from '../entities/gameData';
+import type { GameData } from '../entities/gameData';
+import { defaultXboxSpells } from './xboxSpells';
 import type { VocationId } from '../value-objects/ids';
 import { currentSpellId } from './spells';
 
@@ -9,6 +10,7 @@ import { currentSpellId } from './spells';
 export const HOTBAR_SIZE = 9;
 /** Tamanho da barra nas versões antigas (os atalhos novos entram depois dele). */
 const LEGACY_SIZE = 6;
+const RETIRED_XBOX_ATTACKS = ['swift_bolt', 'runic_burst', 'arcane_storm'];
 
 export type HotbarEntry = { kind: 'spell'; id: string } | { kind: 'item'; id: string } | { kind: 'potion'; id: 'health' | 'mana' } | null;
 
@@ -29,7 +31,7 @@ export function encodeHotbarEntry(e: HotbarEntry): string {
 
 /** Atalhos padrão: as magias da vocação e as duas poções automáticas. */
 export function defaultHotbar(data: GameData, vocation: VocationId): string[] {
-  const spells = playerSpellIds(data, vocation).slice(0, HOTBAR_SIZE - 2).map((id) => `spell:${id}`);
+  const spells = data.vocations[vocation].spells.slice(0, HOTBAR_SIZE - 2).map((id) => `spell:${id}`);
   while (spells.length < HOTBAR_SIZE - 2) spells.push('');
   return [...spells, 'potion:health', 'potion:mana'];
 }
@@ -43,7 +45,7 @@ function migrate(data: GameData, e: HotbarEntry): HotbarEntry {
 
 function valid(data: GameData, vocation: VocationId, e: HotbarEntry): boolean {
   if (!e) return false;
-  if (e.kind === 'spell') return !!data.spells[e.id] && hasPlayerSpell(data, data.spells[e.id]!) && data.spells[e.id]!.vocations.includes(vocation);
+  if (e.kind === 'spell') return !!data.spells[e.id] && data.spells[e.id]!.vocations.includes(vocation);
   if (e.kind === 'item') return !!data.items[e.id]?.use;
   return true;
 }
@@ -63,11 +65,19 @@ export function normalizeHotbar(data: GameData, vocation: VocationId, raw: reado
     const code = valid(data, vocation, e) ? encodeHotbarEntry(e) : '';
     out.push(code && out.includes(code) ? '' : code);
   }
+  // Recupera os espaços das antigas magias genéricas sem sobrescrever atalhos válidos.
+  const attacks = defaultXboxSpells(data, vocation);
+  for (let i = 0; i < out.length; i++) {
+    const entry = parseHotbarEntry(base[i]);
+    if (out[i] || entry?.kind !== 'spell') continue;
+    const replacement = attacks[RETIRED_XBOX_ATTACKS.indexOf(entry.id)];
+    if (replacement && !out.includes(`spell:${replacement}`)) out[i] = `spell:${replacement}`;
+  }
   // barra antiga (6 ou 8 atalhos): as magias da vocação que ainda não estão na barra ocupam os atalhos novos
   const grown = legacy ? LEGACY_SIZE : list.length;
   if (grown < HOTBAR_SIZE) {
     const have = new Set(out);
-    const fresh = playerSpellIds(data, vocation).filter((id) => !have.has(`spell:${id}`));
+    const fresh = data.vocations[vocation].spells.filter((id) => !have.has(`spell:${id}`));
     for (let i = grown; i < HOTBAR_SIZE && fresh.length; i++) if (!out[i]) out[i] = `spell:${fresh.shift()}`;
   }
   return out;

@@ -15,16 +15,16 @@ No Edge, conecte o controle por USB ou Bluetooth e pressione um botão. O jogo d
 | Botão | No jogo |
 | --- | --- |
 | A | Confirma o alvo e inicia ataque básico. Sem alvo, interage, abre loot ou mira o monstro visível mais próximo. |
-| X / B / Y | Raio Rápido (2 s), Impacto Rúnico (4 s) e Tempestade Arcana (6 s). |
+| X / B / Y | Três magias escolhidas pelo jogador no grimório da vocação. |
 | RB / LB | Marca monstros / jogadores próximos sem iniciar ataque. |
 | RT / LT | Usa poção de vida / de mana. |
 | View / Menu | Mapa / menu. |
 | LS / RS | Limpa o alvo / abre as opções do jogador marcado. |
 | ↑ / ↓ / ← / → | Mapa / mochila / personagem / lista de jogadores. |
 
-As três magias ofensivas estão disponíveis desde o início em todas as vocações. A exaustão da última magia bloqueia as outras magias de ataque. Ataques básicos e poções têm seus próprios tempos. O grimório ainda oferece magia de cura e suporte.
+Cada vocação tem seu grimório original, com magias de ataque, cura e suporte. No RPGZIMX, a exaustão de ataque segue a recarga da última magia de ataque lançada. Cura, ataques básicos e poções têm seus próprios tempos.
 
-Remapeie os botões em **Menu → Controle Xbox**. Cada alteração troca os dois atalhos envolvidos. Teclado, mouse e toque também estão disponíveis. As seções de histórico abaixo documentam as versões do RPGZIM que deram origem a esta edição.
+Em **Menu → Controle Xbox → Magias nos atalhos**, escolha as três magias de cada personagem. Os requisitos de nível e nível mágico continuam valendo. Na seção **Botões**, remapeie os comandos. Teclado, mouse e toque também estão disponíveis. As seções de histórico abaixo documentam as versões do RPGZIM que deram origem a esta edição.
 
 **Instalar como app:** no iPhone/iPad, abra no Safari → Compartilhar → *Adicionar à Tela de Início* (a tela inicial do
 jogo mostra o passo a passo). No Android/Chrome/Edge aparece o botão *Instalar o app*. Instalado, abre em tela cheia

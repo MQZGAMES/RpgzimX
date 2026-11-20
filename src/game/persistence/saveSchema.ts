@@ -4,6 +4,7 @@ import type { CharacterState, ItemStack } from '../../domain/entities/character'
 import { EQUIP_SLOTS, SKILL_IDS, type EquipSlot } from '../../domain/entities/definitions';
 import type { GameData } from '../../domain/entities/gameData';
 import { normalizeHotbar, normalizeHotbarSets } from '../../domain/rules/hotbar';
+import { normalizeXboxSpells } from '../../domain/rules/xboxSpells';
 import { SEASON, isOldSeason, seasonReset } from '../../domain/rules/season';
 import { WORLD_VERSION } from '../../domain/rules/worldVersion';
 import { addItem } from '../../domain/rules/inventory';
@@ -145,6 +146,7 @@ export function parseSave(data: GameData, raw: unknown, start?: { x: number; y: 
     facing: c.facing === 'up' || c.facing === 'left' || c.facing === 'right' ? c.facing : 'down',
     hotbar,
     ...normalizeHotbarSets(data, c.vocation, hotbar, c.hotbarSets, c.hotbarSet),
+    xboxSpells: normalizeXboxSpells(data, c.vocation, c.xboxSpells),
     flags,
     pk: parsePk(c.pk),
     stats: {

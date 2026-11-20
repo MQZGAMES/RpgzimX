@@ -6,7 +6,6 @@ import { NPCS, SHOPS } from './npcs';
 import { SPELLS } from './spells';
 import { VOCATIONS } from './vocations';
 import { HEROES } from './heroes';
-import { PLAYER_ATTACKS, PLAYER_ATTACK_IDS } from './playerAttacks';
 
 export const GAME_DATA: GameData = {
   items: ITEMS,
@@ -21,6 +20,8 @@ export const GAME_DATA: GameData = {
 
 export const RPGZIMX_DATA: GameData = {
   ...GAME_DATA,
-  spells: { ...SPELLS, ...PLAYER_ATTACKS },
-  playerAttacks: PLAYER_ATTACK_IDS,
+  balance: {
+    ...BALANCE,
+    combat: { ...BALANCE.combat, attackExhaustBySpell: true },
+  },
 };

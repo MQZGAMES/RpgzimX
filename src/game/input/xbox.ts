@@ -2,9 +2,9 @@ export const XBOX_BUTTONS = ['A', 'B', 'X', 'Y', 'LB', 'RB', 'LT', 'RT', 'View',
 
 export const XBOX_ACTIONS = {
   action: 'Ação / ataque básico',
-  spell1: 'Raio Rápido',
-  spell2: 'Impacto Rúnico',
-  spell3: 'Tempestade Arcana',
+  spell1: 'Magia 1',
+  spell2: 'Magia 2',
+  spell3: 'Magia 3',
   monsters: 'Selecionar monstro',
   health: 'Poção de vida',
   players: 'Selecionar jogador',

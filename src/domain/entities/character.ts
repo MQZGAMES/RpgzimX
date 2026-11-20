@@ -47,6 +47,8 @@ export interface CharacterState {
   /** Conjunto de favoritos ativo (0 a 2) e os três conjuntos (o ativo é atualizado ao trocar; a verdade dele é `hotbar`). */
   hotbarSet: number;
   hotbarSets: string[][];
+  /** Magias escolhidas para as três posições do controle Xbox. */
+  xboxSpells?: string[];
   flags: Record<string, boolean>;
   /** Estado de PK (caveira, PZ lock, mortes injustas), em tempo real para valer entre sessões. */
   pk?: {

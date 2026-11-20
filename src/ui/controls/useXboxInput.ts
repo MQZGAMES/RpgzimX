@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { GameSession } from '../../integration/game-ui-bridge/GameSession';
 import type { AudioService } from '../../game/audio/AudioService';
-import { PLAYER_ATTACK_IDS } from '../../data/playerAttacks';
 import { stickVector, XBOX_ACTION_IDS, xboxButtonMask, type XboxAction, type XboxBindings } from '../../game/input/xbox';
 
 const FOCUSABLE = 'button, a[href], select, input:not([type=hidden]), textarea, [tabindex]:not([tabindex="-1"])';
@@ -83,9 +82,9 @@ function navigate(root: HTMLElement, x: number, y: number, confirm: boolean): vo
 function perform(session: GameSession, action: XboxAction): void {
   switch (action) {
     case 'action': session.action(); break;
-    case 'spell1': session.castControllerSpell(PLAYER_ATTACK_IDS[0]); break;
-    case 'spell2': session.castControllerSpell(PLAYER_ATTACK_IDS[1]); break;
-    case 'spell3': session.castControllerSpell(PLAYER_ATTACK_IDS[2]); break;
+    case 'spell1':
+    case 'spell2':
+    case 'spell3': session.castControllerSpell(action); break;
     case 'monsters': session.selectNearbyMonster(); break;
     case 'players': session.selectNearbyPlayer(); break;
     case 'health': session.quickPotion('health'); break;

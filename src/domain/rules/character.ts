@@ -3,6 +3,7 @@ import type { CharacterState } from '../entities/character';
 import { SKILL_IDS, type SkillId } from '../entities/definitions';
 import type { GameData } from '../entities/gameData';
 import { HOTBAR_SETS, defaultHotbar } from './hotbar';
+import { defaultXboxSpells } from './xboxSpells';
 import { SEASON } from './season';
 import { WORLD_VERSION } from './worldVersion';
 import type { VocationId } from '../value-objects/ids';
@@ -47,6 +48,7 @@ export function createCharacter(
     position: { ...opts.position },
     facing: 'down',
     hotbar: defaultHotbar(data, opts.vocation),
+    xboxSpells: defaultXboxSpells(data, opts.vocation),
     hotbarSet: 0,
     hotbarSets: Array.from({ length: HOTBAR_SETS }, () => defaultHotbar(data, opts.vocation)),
     flags: {},

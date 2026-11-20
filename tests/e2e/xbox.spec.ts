@@ -9,6 +9,7 @@ type DebugGame = {
   npcs(): { id: string; x: number; y: number }[];
   ui(): { selectedActor?: string; selectedMonster?: string };
   castLog(): { spellId: string }[];
+  save(): Promise<void>;
 };
 const controller = (page: Page, patch: Partial<VirtualXbox>) =>
   page.evaluate(async (next) => {
@@ -43,6 +44,7 @@ test('Xbox cria personagem, navega, anda, interage, seleciona, lança magia e re
   await expect(page.getByTestId('voc-knight')).toBeFocused();
   await press(page, 14);
   await expect(page.getByTestId('voc-paladin')).toBeFocused();
+  await press(page, 0);
   await page.getByTestId('name-input').focus();
   await press(page, 0);
   const keyboard = page.getByRole('dialog', { name: 'Nome do personagem' });
@@ -94,7 +96,7 @@ test('Xbox cria personagem, navega, anda, interage, seleciona, lança magia e re
   await press(page, 0);
   await expect.poll(async () => (await getPlayer()).target).toBe(monster);
   await press(page, 2);
-  await expect.poll(() => page.evaluate(() => (window.__RPGZIM__ as DebugGame).castLog().map((entry) => entry.spellId))).toContain('swift_bolt');
+  await expect.poll(() => page.evaluate(() => (window.__RPGZIM__ as DebugGame).castLog().map((entry) => entry.spellId))).toContain('holy_arrow');
 
   await press(page, 9);
   await expect(page.getByRole('dialog', { name: 'Menu (pausado)' })).toBeVisible();
@@ -102,13 +104,34 @@ test('Xbox cria personagem, navega, anda, interage, seleciona, lança magia e re
   await press(page, 0);
   const settings = page.getByRole('dialog', { name: 'Controle Xbox' });
   await expect(settings).toBeVisible();
-  const binding = settings.getByLabel('Raio Rápido');
+  const choice = settings.getByTestId('xbox-spell1-choice');
+  await expect(choice).toHaveValue('holy_arrow');
+  await expect(choice.locator('option[value="earth_thorn"]')).toHaveCount(0);
+  await expect(choice.locator('option[value="arrow_rain"]')).toContainText('Nv 2');
+  await expect(choice).toBeFocused();
+  // Direcional troca a magia. Se a nova escolha já estava em B, X e B trocam de magia.
+  await press(page, 15);
+  await expect(choice).toHaveValue('arrow_rain');
+  await expect(settings.getByTestId('xbox-spell2-choice')).toHaveValue('holy_arrow');
+  await choice.selectOption('light_heal');
+  const binding = settings.getByLabel('Magia 1', { exact: true });
   await binding.selectOption('3');
-  await expect(settings.getByLabel('Tempestade Arcana')).toHaveValue('2');
+  await expect(settings.getByLabel('Magia 3', { exact: true })).toHaveValue('2');
+  await expect(choice).toHaveValue('light_heal');
   await press(page, 1);
   await expect(settings).toBeHidden();
   await press(page, 1);
-  await expect(page.getByTestId('xbox-hud').getByText('Y', { exact: true })).toBeVisible();
+  const hud = page.getByTestId('xbox-hud');
+  const heal = hud.getByTestId('spell-light_heal');
+  await expect(heal.locator('..').getByText('Y', { exact: true })).toBeVisible();
+  await press(page, 3);
+  await expect.poll(() => page.evaluate(() => (window.__RPGZIM__ as DebugGame).castLog().map((entry) => entry.spellId))).toContain('light_heal');
+
+  await page.evaluate(() => (window.__RPGZIM__ as DebugGame).save());
+  await page.reload();
+  await controller(page, { connected: true });
+  await page.getByRole('button', { name: /^Abc/ }).click();
+  await expect(heal.locator('..').getByText('Y', { exact: true })).toBeVisible({ timeout: 45_000 });
   await controller(page, { connected: false });
   await expect(page.getByTestId('xbox-hud')).toBeHidden();
   await expect(page.getByTestId('desktop-hotbar')).toBeVisible();

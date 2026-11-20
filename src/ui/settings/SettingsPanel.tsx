@@ -343,7 +343,7 @@ export function HelpPanel({ onClose, touch }: { onClose: () => void; touch: bool
   return (
     <Panel title="Controles" onClose={onClose} icon="ui_hand">
       <h3 className="mb-1 text-[13px] text-gold">Xbox</h3>
-      {line('A · X · B · Y', 'Ação / ataque · magias de 2, 4 e 6 segundos')}
+      {line('A · X · B · Y', 'Ação / ataque · três magias escolhidas em Controle Xbox')}
       {line('RB · LB', 'Selecionar monstros · selecionar jogadores')}
       {line('RT · LT', 'Poção de vida · poção de mana')}
       {line('Analógico · ↑↓←→', 'Andar · abrir mapa, mochila, personagem ou jogadores')}
