@@ -91,7 +91,7 @@ function perform(session: GameSession, action: XboxAction): void {
     case 'mana': session.quickPotion('mana'); break;
     case 'map': session.setPanel('minimap'); break;
     case 'menu': session.setPanel('settings'); break;
-    case 'clear': session.clearTarget(); break;
+    case 'clear': session.clearControllerTarget(); break;
     case 'social': session.openSelectedPlayer(); break;
   }
 }

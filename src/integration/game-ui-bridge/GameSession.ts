@@ -719,7 +719,7 @@ export class GameSession {
     const w = this.sim.world;
     const monsters = nearbyMonsters(w, SCREEN_RANGE);
     const index = monsters.findIndex((m) => m.id === (w.ui.selectedMonster ?? w.human.targetId));
-    this.clearTarget();
+    this.clearControllerTarget();
     w.ui.selectedMonster = monsters.length ? monsters[(index + 1) % monsters.length]!.id : null;
     if (!w.ui.selectedMonster) this.pushMessage('Nenhum monstro visível por perto.', 'warning');
   }
@@ -784,13 +784,16 @@ export class GameSession {
     if (spell.effect === 'damage' && this.confirmSelection() === false) return;
     this.cast(spell.id);
   }
-  clearTarget(): void {
+  clearControllerTarget(): void {
     const w = this.sim.world;
     w.ui.selectedActor = null;
     w.ui.selectedMonster = null;
     this.cancelQueuedSpell();
-    this.sim.setTarget(null);
+    this.clearTarget();
     this.dirty = true;
+  }
+  clearTarget(): void {
+    this.sim.setTarget(null);
   }
   interact(): void {
     if (this.sim.interact()) this.audio.play('ui');

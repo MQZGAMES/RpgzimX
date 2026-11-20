@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { GAME_DATA, RPGZIMX_DATA } from '../../src/data';
+import { GAME_DATA } from '../../src/data';
 import { createCharacter } from '../../src/domain/rules/character';
 import { VOCATION_IDS } from '../../src/domain/value-objects/ids';
 import { spellCooldownRemaining } from '../../src/game/abilities/spells';
@@ -11,7 +11,7 @@ import { makeCharacter, worldMap } from '../helpers';
 it.each(VOCATION_IDS)('restores the original spellbook and controller defaults for %s', (vocation) => {
   const map = worldMap();
   const character = makeCharacter(vocation);
-  const sim = new GameSimulation({ data: RPGZIMX_DATA, map, character });
+  const sim = new GameSimulation({ data: GAME_DATA, map, character });
   const snapshot = buildSnapshot(sim, 0);
   const original = GAME_DATA.vocations[vocation].spells;
   expect(snapshot.spellbook.map((spell) => spell.id)).toEqual(original);
@@ -20,7 +20,7 @@ it.each(VOCATION_IDS)('restores the original spellbook and controller defaults f
 });
 
 it('migrates old shared hotbar spells and validates per-character controller choices on save', () => {
-  const data = RPGZIMX_DATA;
+  const data = GAME_DATA;
   const character = makeCharacter('druid');
   delete character.xboxSpells;
   character.hotbar = ['spell:swift_bolt', 'spell:runic_burst', 'spell:arcane_storm', 'spell:light_heal', 'potion:mana'];
@@ -34,13 +34,9 @@ it('migrates old shared hotbar spells and validates per-character controller cho
   expect(parseSave(data, toSaveFile(migrated)).character.xboxSpells).toEqual(['earth_thorn', 'sap_blessing', 'frost_burst']);
 });
 
-it.each([
-  ['arcane_bolt', 2000],
-  ['flame_lance', 4000],
-  ['fire_nova', 6000],
-] as const)('%s imposes %s ms of shared attack exhaustion and leaves healing available', (id, exhaustion) => {
+it('keeps the original 2-second attack exhaustion and the individual 6-second spell cooldown', () => {
   const map = worldMap();
-  const data = RPGZIMX_DATA;
+  const data = GAME_DATA;
   const character = createCharacter(data, { id: 'x', name: 'Teste', vocation: 'sorcerer', now: 0, position: map.playerStart });
   character.level = 15;
   character.skills.magic.level = 10;
@@ -53,15 +49,14 @@ it.each([
   sim.teleportPlayer(x, y);
   expect({ x: w.human.x, y: w.human.y }).toEqual({ x, y });
   sim.setTarget(monster.id);
-  expect(sim.castSpell(id)).toBe(true);
-  const attacks = ['arcane_bolt', 'flame_lance', 'fire_nova'];
-  for (const other of attacks) {
-    expect(spellCooldownRemaining(w, other)).toBe(exhaustion);
-    expect(sim.castSpell(other)).toBe(false);
-  }
+  expect(sim.castSpell('fire_nova')).toBe(true);
+  expect(spellCooldownRemaining(w, 'fire_nova')).toBe(6000);
+  expect(spellCooldownRemaining(w, 'arcane_bolt')).toBe(2000);
+  expect(sim.castSpell('arcane_bolt')).toBe(false);
   expect(sim.castSpell('light_heal')).toBe(true);
-  w.now += exhaustion - 1;
-  expect(spellCooldownRemaining(w, id)).toBe(1);
-  w.now++;
-  expect(attacks.map((other) => spellCooldownRemaining(w, other))).toEqual([0, 0, 0]);
+  w.now += 2000;
+  expect(spellCooldownRemaining(w, 'fire_nova')).toBe(4000);
+  expect(spellCooldownRemaining(w, 'arcane_bolt')).toBe(0);
+  sim.setTarget(monster.id);
+  expect(sim.castSpell('arcane_bolt')).toBe(true);
 });

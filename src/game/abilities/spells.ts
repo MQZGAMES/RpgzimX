@@ -147,7 +147,7 @@ export function castSpell(w: World, spellId: string): boolean {
     SPELL_GROUP_KEY[group],
     w.now,
     group === 'attack'
-      ? (p === w.human && combatCfg.attackExhaustBySpell ? spell.cooldownMs : combatCfg.attackExhaustMs)
+      ? combatCfg.attackExhaustMs
       : group === 'heal'
         ? combatCfg.healExhaustMs
         : combatCfg.globalSpellCooldownMs,

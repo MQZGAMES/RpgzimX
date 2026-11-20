@@ -14,7 +14,7 @@ export function CreateCharacter({ onBack, onCreate, xboxConnected }: { onBack: (
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const error = validateName(name);
   const v = data.vocations[vocation];
-  const spells = data.vocations[vocation].spells.map((id) => data.spells[id]!);
+  const spells = v.spells.map((id) => data.spells[id]!);
 
   return (
     <div className="fixed inset-0 overflow-y-auto bg-ink">
@@ -99,7 +99,7 @@ export function CreateCharacter({ onBack, onCreate, xboxConnected }: { onBack: (
             {touched && error && <span className="text-[12px] text-hp-light">{error}</span>}
           </label>
           {xboxConnected && <PixelButton data-testid="xbox-name-keyboard" onClick={() => setKeyboardOpen(true)}>Digitar com controle</PixelButton>}
-          <PixelButton type="submit"  variant="gold" className="px-2 py-1 text-base" ariaLabel="Começar aventura">
+          <PixelButton type="submit" variant="gold" className="px-2 py-1 text-base" ariaLabel="Começar aventura">
             Começar aventura
           </PixelButton>
         </form>

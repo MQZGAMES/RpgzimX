@@ -22,7 +22,7 @@ No Edge, conecte o controle por USB ou Bluetooth e pressione um botão. O jogo d
 | LS / RS | Limpa o alvo / abre as opções do jogador marcado. |
 | ↑ / ↓ / ← / → | Mapa / mochila / personagem / lista de jogadores. |
 
-Cada vocação tem seu grimório original, com magias de ataque, cura e suporte. No RPGZIMX, a exaustão de ataque segue a recarga da última magia de ataque lançada. Cura, ataques básicos e poções têm seus próprios tempos.
+Cada vocação tem seu grimório original, com magias de ataque, cura e suporte. Magias de ataque têm 2 segundos de exaustão compartilhada, além da recarga individual de cada magia. Cura, ataques básicos e poções têm seus próprios tempos.
 
 Em **Menu → Controle Xbox → Magias nos atalhos**, escolha as três magias de cada personagem. Os requisitos de nível e nível mágico continuam valendo. Na seção **Botões**, remapeie os comandos. Teclado, mouse e toque também estão disponíveis. As seções de histórico abaixo documentam as versões do RPGZIM que deram origem a esta edição.
 

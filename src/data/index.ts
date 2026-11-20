@@ -17,11 +17,3 @@ export const GAME_DATA: GameData = {
   heroes: HEROES,
   balance: BALANCE,
 };
-
-export const RPGZIMX_DATA: GameData = {
-  ...GAME_DATA,
-  balance: {
-    ...BALANCE,
-    combat: { ...BALANCE.combat, attackExhaustBySpell: true },
-  },
-};
